@@ -51,7 +51,7 @@ from dataclasses import dataclass
 from itertools import chain
 import numpy as np
 
-from .baselines import _MW_TITLE, _clean
+from .baselines import _MW_JAVA, _MW_TITLE, _clean
 from .brands import brand_of, title_brands
 
 Q = 3
@@ -63,8 +63,6 @@ _STRIP = re.compile(r"[\s,/]+")
 _WORDS = re.compile(r"[\s,/|()\[\]]+")
 _SPARKER_PRE = re.compile(r", |\. |\.$|\(|\)")
 _JAVA_WS = re.compile(r"[ \t\n\x0b\f\r]+")
-# model-word regex as written in the Java code: "^" inside the class is a literal, so it is excluded too
-_MW_JAVA = re.compile(r"([a-zA-Z0-9]*(([0-9]+[^0-9^,^ ]+)|([^0-9^,^ ]+[0-9]+))[a-zA-Z0-9]*)")
 
 
 @dataclass(frozen=True)

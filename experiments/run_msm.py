@@ -1,14 +1,38 @@
-"""Experiment 3: MSM, MSMP and MSMP+ re-implemented as end-to-end baselines (lshdd/msm.py).
+"""Experiment 3: MSM, MSMP and MSMP+ re-implemented as end-to-end baselines (lshdd/msm.py,
+lshdd/baselines.py).
 
 Bootstraps over the duplicate clusters (common.get_splits, SPLIT=cluster by default). For every
 bootstrap the MSM parameters (gamma, alpha, beta, mu, epsilon) are chosen by grid search on the
 training products, separately for every pre-selection, and F1 is measured on the out-of-bag
 products.
     msm|all          MSM on every pair of different Web shops
-    msmp|r<r>        MSM on the candidates of MSMP (title model words, classical banding)
-    msmp_plus|r<r>   MSM on the candidates of MSMP+ (cleaned title + value model words)
-As in MSM, the similarity components of every pair are computed once for the whole data set and
-shared by all bootstraps (they only depend on the two products).
+    msmp|t<t>        MSM after the LSH of MSMP (title model words) with threshold t
+    msmp_plus|t<t>   MSM after the LSH of MSMP+ (cleaned title + value model words)
+The LSH is built on the collection at hand (training or out-of-bag products), with a signature of
+50% of the vector length and t = 0.05, 0.10, ..., 0.95 as in MSMP; t fixes the bands
+(baselines.bands_for). As in MSM, the similarity components of every pair are computed once for
+the whole data set and shared by all bootstraps (they only depend on the two products).
+
+MSM_MODE=code (default) follows the authors' code, MSM_MODE=paper the text of the papers:
+                    code                                    paper
+    MSM             lshdd/msm.py CODE                       lshdd/msm.py PAPER
+    MinHash         random permutations                     universal hashing (lshdd/minhash.py)
+    band keys       entries concatenated (can collide)      exact
+    MSMP tokens     Java regex, words > 1 character         _MW_TITLE
+    pairs scored    pairs with a common LSH neighbour       LSH candidate pairs
+    not scored      distance 1 (never blocks a merge)       distance infinity
+MSMP+ has no public code; its code mode puts the MSMP+ representation into the MSMP code.
+
+Every row reports, on the out-of-bag products:
+    F1, precision, recall (and *_clean against the cleaned gold standard)
+    frac, PC, PQ, F1star, n_cand   LSH candidate pairs, pairs of one shop included, over all
+                                   n(n-1)/2 pairs: the "fraction of comparisons" of MSMP+;
+                                   msm|all has frac = 1
+    frac_scored                    pairs of different shops whose similarity is computed, over
+                                   all pairs: the comparisons MSM makes (simsComputed)
+    PC_perfect                     recall after clustering with MSMP's "perfect similarity" (1 for
+                                   scored duplicates, 0 otherwise): the PC curve of MSMP
+    b, r, t                        bands and threshold
 
 Grid of the MSM paper: alpha, gamma, mu and epsilon from 0.1 to 0.9 in steps of 0.1; beta also 0,
 the optimum MSM reports. kappa = lambda = 1 (key and value similarities enter linearly), as in all
@@ -19,12 +43,9 @@ MSM sees the raw data (MSM_DATA=raw); the cleaning of MSMP+ only enters its LSH 
 in the paper. MSM_DATA=clean (MSM on cleaned data) and tune (cleaning tuned as a parameter) are
 ablations.
 
-Bootstraps: 50 for msm (MSM paper, APFA) and 100 for msmp / msmp_plus (MSMP), unless
-n_bootstraps is given. Bootstrap i is the same draw in every run (one seeded sequence), so the
-first 50 bootstraps of msmp are those of msm.
-
-MSM_MODE=code (default) follows the MSM authors' own code, MSM_MODE=paper the text of the papers;
-see lshdd/msm.py (MSMConfig) for the differences.
+Bootstraps: 50 for msm (MSM paper, APFA), 100 for msmp (MSMP) and 10 for msmp_plus (the MSM part of
+MSMP+), unless n_bootstraps is given. Bootstrap i is the same draw in every run (one seeded
+sequence), so the first 50 bootstraps of msmp are those of msm.
 
 SELECTION=train picks the configuration with the best training F1. SELECTION=sparker reproduces
 the MSM authors' code (core/SparkWorker.scala and core/SparkResultsAggregator.scala of
@@ -44,7 +65,6 @@ from dataclasses import asdict
 from itertools import product as grid
 from multiprocessing import Pool
 from common import *
-from run_matching import evaluate
 from lshdd import baselines
 from lshdd.msm import MSM, MODES, hsim, cluster, f1_path, same_shop
 
@@ -61,9 +81,9 @@ GAMMA = ALPHA = MU = TENTHS
 BETA = (0.0,) + TENTHS
 EPS = list(TENTHS)
 CLEAN = DATA_MODES[MSM_DATA]
-ROWS = {"msmp": (3, 4, 5, 6, 8), "msmp_plus": (3, 4, 5, 6)}
+T_GRID = tuple(round(0.05 * i, 2) for i in range(1, 20))
 VARIANTS = ("msm", "msmp", "msmp_plus")
-N_BOOT = {"msm": 50, "msmp": 100, "msmp_plus": 100}
+N_BOOT = {"msm": 50, "msmp": 100, "msmp_plus": 10}
 SPARKER_CHUNKS = 10     # numChunksParams default of sparker's Runner
 SPARKER_SLICES = 8      # numSlicesParams default = Spark parallelism (machine dependent)
 # Results of two runs may only be merged when all of these agree.
@@ -93,32 +113,45 @@ def infinite(P, ids):
     return same_shop([P[i]["shop"] for i in ids]) if _G["cfg"].unscored == "one" else None
 
 
-def collection(P, ids, seed, variants):
-    """Pre-selections of one collection and, per pre-selection, the indices of its pairs in the
-    global components with the pairs in local positions."""
+def lsh_stats(n_cand, found, n_gold, n_all):
+    pq = found / n_cand if n_cand else 0.0
+    pc = found / n_gold if n_gold else 0.0
+    return dict(frac=n_cand / n_all, PC=pc, PQ=pq, F1star=2 * pq * pc / (pq + pc) if pq + pc else 0.0,
+                n_cand=float(n_cand))
+
+
+def collection(P, ids, seed, variants, gold):
+    """Pre-selections of one collection. Per variant: the indices of its scored pairs in the global
+    components, those pairs in local positions, a key shared by variants that score the same
+    pairs, and the LSH statistics."""
+    code = MODE == "code"
     prods = [public(P[i]) for i in ids]
-    shop = [p["shop"] for p in prods]
-    pre = {}
-    if "msm" in variants:
-        pre["msm|all"] = None
-    for name, tok in (("msmp", baselines.msmp_tokens), ("msmp_plus", baselines.msmp_plus_tokenizer(prods))):
-        if name in variants:
-            for r, c in baselines.classical_candidates(prods, tok, ROWS[name], seed).items():
-                pre["%s|r%d" % (name, r)] = c
+    n, n_all = len(ids), len(ids) * (len(ids) - 1) / 2
+    shop = np.array([p["shop"] for p in prods])
+    cross = shop[:, None] != shop[None, :]
     V = _G["valid"]
     pos = -np.ones(len(P), dtype=np.int64)
-    pos[ids] = np.arange(len(ids))
+    pos[ids] = np.arange(n)
     keep = np.nonzero((pos[V[:, 0]] >= 0) & (pos[V[:, 1]] >= 0))[0]
-    local = [(int(pos[a]), int(pos[b])) for a, b in V[keep]]
-    sel = {}
-    for v, c in pre.items():
-        if c is None:
-            pre[v] = {(i, j) for i in range(len(ids)) for j in range(i + 1, len(ids)) if shop[i] != shop[j]}
-            sel[v] = (keep, local)
-        else:
-            k = [t for t, p in enumerate(local) if p in c]
-            sel[v] = (keep[k], [local[t] for t in k])
-    return pre, sel
+    ia, ib = pos[V[keep, 0]], pos[V[keep, 1]]
+    local = list(zip(ia.tolist(), ib.tolist()))
+    g = np.array(sorted(gold), dtype=np.int64).reshape(-1, 2)
+    out = {}
+    if "msm" in variants:
+        st = lsh_stats(n_all, len(gold), len(gold), n_all)
+        st.update(frac_scored=np.triu(cross, 1).sum() / n_all, b=0, r=0, t=0.0)
+        out["msm|all"] = dict(idx=keep, pairs=local, key="all", stats=st)
+    for name, tok in (("msmp", baselines.msmp_tokens_code if code else baselines.msmp_tokens),
+                      ("msmp_plus", baselines.msmp_plus_tokenizer(prods))):
+        if name not in variants:
+            continue
+        for t, (b, r, N) in baselines.lsh_neighbours(prods, tok, T_GRID, seed, code).items():
+            scored = baselines.two_hop(N) if code else N
+            k = np.flatnonzero(scored[ia, ib])
+            st = lsh_stats((N.sum() - n) / 2, int(N[g[:, 0], g[:, 1]].sum()), len(gold), n_all)
+            st.update(frac_scored=np.triu(scored & cross, 1).sum() / n_all, b=b, r=r, t=t)
+            out["%s|t%.2f" % (name, t)] = dict(idx=keep[k], pairs=[local[j] for j in k], key=(name, b, r), stats=st)
+    return out
 
 
 def settings():
@@ -145,39 +178,45 @@ def one_bootstrap(args):
     g_tr, g_te = local_gold(P, train), local_gold(P, test)
     gc_te = cleaned_gold(P, test)
     inf_tr, inf_te = infinite(P, train), infinite(P, test)
-    _, sel_tr = collection(P, train, 500 + bi, variants)
-    pre_te, sel_te = collection(P, test, 900 + bi, variants)
+    sel_tr = collection(P, train, 500 + bi, variants, g_tr)
+    sel_te = collection(P, test, 900 + bi, variants, g_te)
+    # variants that score the same training pairs (e.g. two t with the same bands) share the search
+    shared = {sel["key"]: sel for sel in sel_tr.values()}
     S = settings()
-    f_tr = {v: np.empty((len(S), len(EPS))) for v in sel_tr}
+    f_tr = {key: np.empty((len(S), len(EPS))) for key in shared}
     for s, (clean, g, a, b, mu) in enumerate(S):
         d = 1.0 - hsim(comps[clean], g, a, b, mu, cfg)
-        for v, (idx, pairs) in sel_tr.items():
-            f_tr[v][s] = f1_path(len(train), pairs, d[idx], g_tr, EPS, inf_tr)
-    res = {}
-    for v in sel_tr:
-        flat = f_tr[v].ravel()
+        for key, sel in shared.items():
+            f_tr[key][s] = f1_path(len(train), sel["pairs"], d[sel["idx"]], g_tr, EPS, inf_tr)
+    res, test_f1 = {}, {}
+    for v, tr in sel_tr.items():
+        te = sel_te[v]
+        flat = f_tr[tr["key"]].ravel()
         if _G["selection"] == "train":
             c = int(np.argmax(flat))
         else:
-            idx, pairs = sel_te[v]
-            test_f1 = {}
-
             def f_test(c):
                 s = c // len(EPS)
-                if s not in test_f1:
+                if (te["key"], s) not in test_f1:
                     clean, g, a, b, mu = S[s]
                     d = 1.0 - hsim(comps[clean], g, a, b, mu, cfg)
-                    test_f1[s] = f1_path(len(test), pairs, d[idx], g_te, EPS, inf_te)
-                return test_f1[s][c % len(EPS)]
+                    test_f1[te["key"], s] = f1_path(len(test), te["pairs"], d[te["idx"]], g_te, EPS, inf_te)
+                return test_f1[te["key"], s][c % len(EPS)]
             c = sparker_choice(flat, f_test)
         (clean, g, a, b, mu), eps = S[c // len(EPS)], EPS[c % len(EPS)]
         t0 = time.perf_counter()
-        idx, pairs = sel_te[v]
         d = 1.0 - hsim(comps[clean], g, a, b, mu, cfg)
-        pred = cluster(len(test), pairs, d[idx], eps, inf_te)
-        row = evaluate(pred, pre_te[v], g_te, gc_te, len(test))
+        pred = cluster(len(test), te["pairs"], d[te["idx"]], eps, inf_te)
+        seconds = time.perf_counter() - t0
+        row = dict(prf(pred, g_te))
+        cl = prf(pred, gc_te)
+        row.update(F1_clean=cl["F1"], precision_clean=cl["precision"], recall_clean=cl["recall"])
+        row.update(te["stats"])
+        dup = [p for p in te["pairs"] if p in g_te]
+        perfect = cluster(len(test), dup, np.zeros(len(dup)), 0.5, inf_te)
+        row["PC_perfect"] = len(perfect & g_te) / len(g_te) if g_te else 0.0
         row.update(F1_train=flat[c], clean=float(clean), gamma=GAMMA[g], alpha=a, beta=b, mu=mu, epsilon=eps,
-                   cluster_seconds=time.perf_counter() - t0)
+                   cluster_seconds=seconds)
         res[v] = row
     return res
 
@@ -185,7 +224,7 @@ def one_bootstrap(args):
 def run_meta(n_boot, sel):
     return meta("run_msm", max(n_boot.values()), selection=sel, mode=MODE, msm=asdict(MODES[MODE]),
                 n_boot_by_variant=n_boot,
-                grid=dict(data=MSM_DATA, clean=CLEAN, gamma=GAMMA, alpha=ALPHA, beta=BETA, mu=MU, epsilon=EPS, rows=ROWS),
+                grid=dict(data=MSM_DATA, clean=CLEAN, gamma=GAMMA, alpha=ALPHA, beta=BETA, mu=MU, epsilon=EPS, t=T_GRID),
                 sparker_partitions=[SPARKER_CHUNKS, SPARKER_SLICES] if sel == "sparker" else None)
 
 
@@ -231,7 +270,8 @@ if __name__ == "__main__":
     save("msm.json", agg, m)
     for key in sorted(agg, key=lambda s: -agg[s]["frac"]):
         a = agg[key]
-        print("%-18s frac=%.5f PC=%.3f | F1=%.3f (sd %.3f) P=%.3f R=%.3f | train F1=%.3f | clean=%.2f "
-              "gamma=%.2f alpha=%.2f beta=%.2f mu=%.2f eps=%.2f (n=%d)" % (
-                  key, a["frac"], a["PC"], a["F1"], a["F1_sd"], a["precision"], a["recall"], a["F1_train"],
-                  a["clean"], a["gamma"], a["alpha"], a["beta"], a["mu"], a["epsilon"], a["n_boot"]))
+        print("%-18s frac=%.5f scored=%.5f PC=%.3f PC_perfect=%.3f | F1=%.3f (sd %.3f) P=%.3f R=%.3f | train F1=%.3f | "
+              "b=%.0f r=%.0f gamma=%.2f alpha=%.2f beta=%.2f mu=%.2f eps=%.2f (n=%d)" % (
+                  key, a["frac"], a["frac_scored"], a["PC"], a["PC_perfect"], a["F1"], a["F1_sd"], a["precision"],
+                  a["recall"], a["F1_train"], a["b"], a["r"], a["gamma"], a["alpha"], a["beta"], a["mu"],
+                  a["epsilon"], a["n_boot"]))
