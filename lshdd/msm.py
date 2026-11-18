@@ -341,9 +341,8 @@ def _merges(n, pairs, dist, max_eps, infinite=None):
             x = parent[x]
         return x
 
-    for t in np.argsort(dist, kind="stable"):
-        if dist[t] > max_eps:
-            break
+    below = np.flatnonzero(dist <= max_eps)
+    for t in below[np.argsort(dist[below], kind="stable")]:
         ri, rj = find(pairs[t][0]), find(pairs[t][1])
         if ri == rj:
             continue
