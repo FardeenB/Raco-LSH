@@ -2,6 +2,8 @@
 
 Every product is turned into a set of (class, token) pairs. No attribute keys are used;
 only the title and the *values* of the key-value pairs, so no schema alignment is needed.
+The Web-shop name ("Newegg.com - ...", "... - Best Buy") is removed from the title first: it
+says nothing about the product and is never shared by a cross-shop pair.
 
 Token classes
     tw   title word (alphabetic)
@@ -23,6 +25,10 @@ _SPLIT = re.compile(r'[\s/,;:()\[\]|+*]+')
 _QTY = re.compile(r'^\d+(?:\.\d+)?[a-z]+$')
 _NUM = re.compile(r'^\d+(?:\.\d+)?$')
 
+# shop name as title prefix ("Newegg.com - ...") or suffix ("... - Best Buy")
+_SHOP_NAME = r'(?:newegg\.com|best\s*buy|thenerds\.net|amazon\.com)'
+_SHOP = re.compile(r'^\s*%s\s*-\s*|\s*-\s*%s\s*$' % (_SHOP_NAME, _SHOP_NAME), re.I)
+
 # number (optionally a mixed fraction such as 13-7/8 or 45 2/7) followed by an optional unit
 _MEAS = re.compile(
     r'(?<![a-z0-9.])(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d+))?(?:[\s-](\d{1,2})/(\d{1,3}))?\s*'
@@ -37,6 +43,10 @@ def normalise(text):
     s = _HZ.sub("hz ", s)
     s = _LB.sub("lb ", s)
     return s
+
+
+def strip_shop(title):
+    return _SHOP.sub(" ", title)
 
 
 def _is_mixed(t):
@@ -62,7 +72,7 @@ def _word_tokens(s):
 
 def title_tokens(title, min_prefix=4, prefixes=True):
     out = set()
-    for t in _word_tokens(normalise(title)):
+    for t in _word_tokens(normalise(strip_shop(title))):
         if _NUM.match(t):
             out.add(("tn", t))
         elif _QTY.match(t):
