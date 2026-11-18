@@ -10,6 +10,9 @@ pre-selection, and F1 is measured on the out-of-bag products.
 As in MSM, the similarity components of every pair are computed once for the whole data set and
 shared by all bootstraps (they only depend on the two products).
 
+MSM_MODE=code (default) follows the MSM authors' own code, MSM_MODE=paper the text of the papers;
+see lshdd/msm.py (MSMConfig) for the differences.
+
 SELECTION=train picks the configuration with the best training F1. SELECTION=sparker reproduces
 the MSM authors' code (core/SparkWorker.scala and core/SparkResultsAggregator.scala of
 github.com/nickvalstar/APFAProject): the grid, in grid order, is cut into SPARKER_CHUNKS chunks of
@@ -20,16 +23,20 @@ used to show how optimistic the published values are.
 New variants are merged into an existing results/msm.json only when it was made with the same
 protocol, grid and code; otherwise the run stops before computing anything.
 
-usage: [SPLIT=..] [SELECTION=..] python experiments/run_msm.py [n_bootstraps] [n_processes] [variants, e.g. msm or msm,msmp]
+usage: [SPLIT=..] [SELECTION=..] [MSM_MODE=..] python experiments/run_msm.py [n_bootstraps] [n_processes] [variants, e.g. msm or msm,msmp]
 """
 import sys, os, json, time
+from dataclasses import asdict
 from itertools import product as grid
 from multiprocessing import Pool
 from common import *
 from run_matching import evaluate
 from lshdd import baselines
-from lshdd import msm as msm_module
-from lshdd.msm import MSM, hsim, cluster, f1_path
+from lshdd.msm import MSM, MODES, hsim, cluster, f1_path, same_shop
+
+MODE = os.environ.get("MSM_MODE", "code")
+if MODE not in MODES:
+    raise SystemExit("MSM_MODE=%s is not one of %s" % (MODE, ", ".join(MODES)))
 
 GAMMA = (0.6, 0.7, 0.8, 0.9)
 ALPHA = (0.5, 0.6, 0.7, 0.8, 0.9)
@@ -47,19 +54,25 @@ MERGE_KEYS = ("split", "split_seed", "selection", "n_boot", "mode", "grid", "spa
 _G = {}
 
 
-def global_components(P):
+def global_components(P, cfg):
     """Pairs MSM scores on the whole data set and their components (raw and cleaned)."""
     prods = [public(p) for p in P]
     comps = {}
-    for clean in (False, True):
-        m = MSM(prods, clean=clean)
+    for clean in CLEAN:
+        m = MSM(prods, clean=clean, cfg=cfg)
         valid = m.valid_pairs()
         comps[clean] = m.components(valid, GAMMA)
     return np.array(valid, dtype=np.int64), comps
 
 
-def _init(valid, comps, variants, sel):
-    _G.update(valid=valid, comps=comps, variants=variants, selection=sel)
+def _init(valid, comps, variants, sel, cfg):
+    _G.update(valid=valid, comps=comps, variants=variants, selection=sel, cfg=cfg)
+
+
+def infinite(P, ids):
+    """Which pairs of a collection block merges: CODE only the pairs of one shop; PAPER (None)
+    every pair that is not scored, i.e. also different brands and pairs LSH does not propose."""
+    return same_shop([P[i]["shop"] for i in ids]) if _G["cfg"].unscored == "one" else None
 
 
 def collection(P, ids, seed):
@@ -110,17 +123,18 @@ def sparker_choice(f_train, f_test):
 def one_bootstrap(args):
     bi, train, test = args
     P = load_products(DATA)
-    comps = _G["comps"]
+    comps, cfg = _G["comps"], _G["cfg"]
     g_tr, g_te = local_gold(P, train), local_gold(P, test)
     gc_te = cleaned_gold(P, test)
+    inf_tr, inf_te = infinite(P, train), infinite(P, test)
     _, sel_tr = collection(P, train, 500 + bi)
     pre_te, sel_te = collection(P, test, 900 + bi)
     S = settings()
     f_tr = {v: np.empty((len(S), len(EPS))) for v in sel_tr}
     for s, (clean, g, a, b, mu) in enumerate(S):
-        d = 1.0 - hsim(comps[clean], g, a, b, mu)
+        d = 1.0 - hsim(comps[clean], g, a, b, mu, cfg)
         for v, (idx, pairs) in sel_tr.items():
-            f_tr[v][s] = f1_path(len(train), pairs, d[idx], g_tr, EPS)
+            f_tr[v][s] = f1_path(len(train), pairs, d[idx], g_tr, EPS, inf_tr)
     res = {}
     for v in sel_tr:
         flat = f_tr[v].ravel()
@@ -134,15 +148,15 @@ def one_bootstrap(args):
                 s = c // len(EPS)
                 if s not in test_f1:
                     clean, g, a, b, mu = S[s]
-                    d = 1.0 - hsim(comps[clean], g, a, b, mu)
-                    test_f1[s] = f1_path(len(test), pairs, d[idx], g_te, EPS)
+                    d = 1.0 - hsim(comps[clean], g, a, b, mu, cfg)
+                    test_f1[s] = f1_path(len(test), pairs, d[idx], g_te, EPS, inf_te)
                 return test_f1[s][c % len(EPS)]
             c = sparker_choice(flat, f_test)
         (clean, g, a, b, mu), eps = S[c // len(EPS)], EPS[c % len(EPS)]
         t0 = time.perf_counter()
         idx, pairs = sel_te[v]
-        d = 1.0 - hsim(comps[clean], g, a, b, mu)
-        pred = cluster(len(test), pairs, d[idx], eps)
+        d = 1.0 - hsim(comps[clean], g, a, b, mu, cfg)
+        pred = cluster(len(test), pairs, d[idx], eps, inf_te)
         row = evaluate(pred, pre_te[v], g_te, gc_te, len(test))
         row.update(F1_train=flat[c], clean=float(clean), gamma=GAMMA[g], alpha=a, beta=b, mu=mu, epsilon=eps,
                    cluster_seconds=time.perf_counter() - t0)
@@ -151,7 +165,7 @@ def one_bootstrap(args):
 
 
 def run_meta(nb, sel):
-    return meta("run_msm", nb, selection=sel, mode="paper", conflict=msm_module.CONFLICT,
+    return meta("run_msm", nb, selection=sel, mode=MODE, msm=asdict(MODES[MODE]),
                 grid=dict(clean=CLEAN, gamma=GAMMA, alpha=ALPHA, beta=BETA, mu=MU, epsilon=EPS, rows=ROWS),
                 sparker_partitions=[SPARKER_CHUNKS, SPARKER_SLICES] if sel == "sparker" else None)
 
@@ -181,9 +195,10 @@ if __name__ == "__main__":
     P = load_products(DATA)
     m = run_meta(nb, sel)
     keep = mergeable(os.path.join(RESULTS, "msm.json"), m, variants)
-    valid, comps = global_components(P)
+    cfg = MODES[MODE]
+    valid, comps = global_components(P, cfg)
     jobs = [(bi, tr, te) for bi, (tr, te) in enumerate(get_splits(P, nb))]
-    with Pool(nproc, initializer=_init, initargs=(valid, comps, variants, sel)) as pool:
+    with Pool(nproc, initializer=_init, initargs=(valid, comps, variants, sel, cfg)) as pool:
         allres = pool.map(one_bootstrap, jobs, chunksize=1)
     agg = {key: mean_rows([r[key] for r in allres]) for key in allres[0]}
     agg = {**keep, **agg}
