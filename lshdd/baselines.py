@@ -45,12 +45,16 @@ def _clean(s):
     return _HZ.sub("hz", _INCH.sub("inch", s)).lower()
 
 
-def msmp_plus_tokenizer(products, decimals_only=True, title_mw_in_values=True):
+def msmp_plus_tokenizer(products, decimals_only=True, title_mw_in_values=True, value_numbers=True):
     """MSMP+ needs the title model words of the whole collection, so it is a factory.
 
     decimals_only=True keeps only value numbers that contain a decimal point ("we only add
     decimal numbers"); False follows the published regular expression literally, which also
-    admits integers. We report the better of the two variants for the baseline."""
+    admits integers. We report the better of the two variants for the baseline.
+
+    The variants of MSMP+ (Fig. 2-4): title_mw_in_values=False, value_numbers=False is "clean"
+    (MSMP on the cleaned title); value_numbers=False is "clean + values" (title model words also
+    found in the values); both True is MSMP+."""
     title_mw = [set(_MW_TITLE.findall(_clean(p["title"]))) for p in products]
     all_title_mw = set().union(*title_mw) if title_mw else set()
     cache = {}
@@ -60,7 +64,7 @@ def msmp_plus_tokenizer(products, decimals_only=True, title_mw_in_values=True):
             for tok in _clean(v).split():
                 if title_mw_in_values and tok in all_title_mw:
                     out.add(("mw", tok))
-                if _MW_VALUE.match(tok):
+                if value_numbers and _MW_VALUE.match(tok):
                     num = _NUM.match(tok).group(0)
                     if "." in num or not decimals_only:
                         out.add(("num", num))

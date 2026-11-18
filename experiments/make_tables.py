@@ -14,7 +14,7 @@ PAPER = os.path.join(HERE, "..", "paper")
 macros = {}
 metas = {}
 # results files whose numbers are compared with each other in the paper
-BOOTSTRAPPED = ("blocking.json", "matching.json", "msm.json", "checks.json")
+BOOTSTRAPPED = ("blocking.json", "matching.json", "msm.json", "lsh_baselines.json", "checks.json")
 
 
 def load(name):

@@ -8,6 +8,8 @@ products.
     msm|all          MSM on every pair of different Web shops
     msmp|t<t>        MSM after the LSH of MSMP (title model words) with threshold t
     msmp_plus|t<t>   MSM after the LSH of MSMP+ (cleaned title + value model words)
+    msmp_clean|t<t>, msmp_clean_values|t<t>
+                     intermediate MSMP+ representations (only when asked for; FAMILIES)
 The LSH is built on the collection at hand (training or out-of-bag products), with a signature of
 50% of the vector length and t = 0.05, 0.10, ..., 0.95 as in MSMP; t fixes the bands
 (baselines.bands_for). As in MSM, the similarity components of every pair are computed once for
@@ -82,8 +84,17 @@ BETA = (0.0,) + TENTHS
 EPS = list(TENTHS)
 CLEAN = DATA_MODES[MSM_DATA]
 T_GRID = tuple(round(0.05 * i, 2) for i in range(1, 20))
-VARIANTS = ("msm", "msmp", "msmp_plus")
-N_BOOT = {"msm": 50, "msmp": 100, "msmp_plus": 10}
+# LSH representation of every pre-selection, built per collection; the MSMP+ paper also evaluates
+# the LSH of two intermediate steps (Fig. 2-4: "clean", and "values"), see run_lsh_baselines.py
+FAMILIES = {
+    "msmp": lambda prods, code: baselines.msmp_tokens_code if code else baselines.msmp_tokens,
+    "msmp_clean": lambda prods, code: baselines.msmp_plus_tokenizer(prods, title_mw_in_values=False,
+                                                                    value_numbers=False),
+    "msmp_clean_values": lambda prods, code: baselines.msmp_plus_tokenizer(prods, value_numbers=False),
+    "msmp_plus": lambda prods, code: baselines.msmp_plus_tokenizer(prods),
+}
+VARIANTS = ("msm", "msmp", "msmp_plus")                # default; any of ("msm",) + FAMILIES works
+N_BOOT = {"msm": 50, "msmp": 100, "msmp_plus": 10, "msmp_clean": 10, "msmp_clean_values": 10}
 SPARKER_CHUNKS = 10     # numChunksParams default of sparker's Runner
 SPARKER_SLICES = 8      # numSlicesParams default = Spark parallelism (machine dependent)
 # Results of two runs may only be merged when all of these agree.
@@ -141,17 +152,23 @@ def collection(P, ids, seed, variants, gold):
         st = lsh_stats(n_all, len(gold), len(gold), n_all)
         st.update(frac_scored=np.triu(cross, 1).sum() / n_all, b=0, r=0, t=0.0)
         out["msm|all"] = dict(idx=keep, pairs=local, key="all", stats=st)
-    for name, tok in (("msmp", baselines.msmp_tokens_code if code else baselines.msmp_tokens),
-                      ("msmp_plus", baselines.msmp_plus_tokenizer(prods))):
+    for name, make in FAMILIES.items():
         if name not in variants:
             continue
-        for t, (b, r, N) in baselines.lsh_neighbours(prods, tok, T_GRID, seed, code).items():
+        for t, (b, r, N) in baselines.lsh_neighbours(prods, make(prods, code), T_GRID, seed, code).items():
             scored = baselines.two_hop(N) if code else N
             k = np.flatnonzero(scored[ia, ib])
             st = lsh_stats((N.sum() - n) / 2, int(N[g[:, 0], g[:, 1]].sum()), len(gold), n_all)
             st.update(frac_scored=np.triu(scored & cross, 1).sum() / n_all, b=b, r=r, t=t)
             out["%s|t%.2f" % (name, t)] = dict(idx=keep[k], pairs=[local[j] for j in k], key=(name, b, r), stats=st)
     return out
+
+
+def pc_perfect(n, pairs, gold, infinite):
+    """Recall after clustering with MSMP's "perfect similarity": distance 0 for scored duplicates,
+    1 for everything else (MSMP, Section 8; core/PerfectSimilarity in the authors' code)."""
+    dup = [p for p in pairs if p in gold]
+    return len(cluster(n, dup, np.zeros(len(dup)), 0.5, infinite) & gold) / len(gold) if gold else 0.0
 
 
 def settings():
@@ -222,9 +239,7 @@ def one_bootstrap(args):
         cl = prf(pred, gc_te)
         row.update(F1_clean=cl["F1"], precision_clean=cl["precision"], recall_clean=cl["recall"])
         row.update(te["stats"])
-        dup = [p for p in te["pairs"] if p in g_te]
-        perfect = cluster(len(test), dup, np.zeros(len(dup)), 0.5, inf_te)
-        row["PC_perfect"] = len(perfect & g_te) / len(g_te) if g_te else 0.0
+        row["PC_perfect"] = pc_perfect(len(test), te["pairs"], g_te, inf_te)
         row.update(F1_train=flat[c], clean=float(clean), gamma=GAMMA[g], alpha=a, beta=b, mu=mu, epsilon=eps,
                    cluster_seconds=seconds)
         res[v] = row
@@ -258,7 +273,7 @@ if __name__ == "__main__":
     nb = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1] != "-" else None
     nproc = int(sys.argv[2]) if len(sys.argv) > 2 else 4
     variants = tuple(sys.argv[3].split(",")) if len(sys.argv) > 3 else VARIANTS
-    unknown = set(variants) - set(VARIANTS)
+    unknown = set(variants) - {"msm", *FAMILIES}
     if unknown:
         raise SystemExit("unknown variants: %s" % ", ".join(sorted(unknown)))
     sel = selection(SELECTIONS)
