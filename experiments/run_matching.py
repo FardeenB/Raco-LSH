@@ -93,7 +93,8 @@ if __name__ == "__main__":
     nb = int(sys.argv[1]) if len(sys.argv) > 1 else 100
     nex = int(sys.argv[2]) if len(sys.argv) > 2 else 10
     P = load_products(DATA)
-    jobs = [(bi, tr, te, bi < nex) for bi, (tr, te) in enumerate(splits(len(P), nb))]
+    selection()
+    jobs = [(bi, tr, te, bi < nex) for bi, (tr, te) in enumerate(get_splits(P, nb))]
     with Pool(2) as pool:
         allres = pool.map(one_bootstrap, jobs, chunksize=1)
     agg = {}
@@ -102,8 +103,9 @@ if __name__ == "__main__":
         rows = [r[key] for r in allres if key in r and r[key] is not None]
         agg[key] = mean_rows(rows)
     per_boot = {key: [r[key]["F1"] for r in allres if key in r] for key in keys}
-    save("matching.json", agg)
-    save("matching_per_bootstrap_F1.json", per_boot)
+    m = meta("run_matching", nb, n_hashes=N_HASH, grid=GRID, n_boot_exhaustive=nex)
+    save("matching.json", agg, m)
+    save("matching_per_bootstrap_F1.json", per_boot, m)
     for key in sorted(agg, key=lambda s: (s.split("|")[0], agg[s]["frac"])):
         a = agg[key]
         print("%-24s frac=%.5f PC=%.3f PQ=%.3f | F1=%.3f P=%.3f R=%.3f | clean F1=%.3f  (n=%d)" % (

@@ -5,7 +5,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-RES = os.path.join(HERE, "..", "results")
+RES = os.environ.get("RESULTS_DIR", os.path.join(HERE, "..", "results"))
 OUT = os.path.join(HERE, "..", "paper", "figures")
 os.makedirs(OUT, exist_ok=True)
 
@@ -20,7 +20,9 @@ plt.rcParams.update({
 
 def load(name):
     with open(os.path.join(RES, name)) as f:
-        return json.load(f)
+        res = json.load(f)
+    res.pop("_meta", None)
+    return res
 
 
 def series(res, prefix, pattern=None):

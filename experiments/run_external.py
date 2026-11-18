@@ -90,4 +90,4 @@ if __name__ == "__main__":
                 pcs[target] = min(ok, key=lambda a: a["frac"]) if ok else None
             print("  %-24s best F1*=%.3f (PC=%.3f PQ=%.3f frac=%.5f) | " % (vname, best["F1star"], best["PC"], best["PQ"], best["frac"])
                   + "  ".join("PC>=%.1f: frac=%s PQ=%s" % (t, ("%.5f" % a["frac"]) if a else "-", ("%.3f" % a["PQ"]) if a else "-") for t, a in pcs.items()))
-    save("external.json", out)
+    save("external.json", out, meta("run_external", seeds=5, ks=KS))

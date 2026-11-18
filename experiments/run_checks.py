@@ -11,7 +11,6 @@ usage: python experiments/run_checks.py [n_bootstraps]
 import sys, time
 from itertools import combinations
 from common import *
-from lshdd.evaluate import bootstrap_splits
 from lshdd.pipeline import DuplicateDetector, featurize
 from lshdd.tokens import product_tokens
 
@@ -27,11 +26,12 @@ def exhaustive_seconds(det, prods):
 
 if __name__ == "__main__":
     nb = int(sys.argv[1]) if len(sys.argv) > 1 else 10
+    selection()
     P = load_products(DATA)
     same = all(product_tokens(p) == product_tokens(public(p)) for p in P)
     print("tokens identical without gold field:", same)
     rows = []
-    for bi, (tr, te) in enumerate(splits(len(P), nb)):
+    for bi, (tr, te) in enumerate(get_splits(P, nb)):
         ptr, pte = [public(P[i]) for i in tr], [public(P[i]) for i in te]
         g_tr, g_te = local_gold(P, tr), local_gold(P, te)
         t0 = time.perf_counter()
@@ -53,7 +53,7 @@ if __name__ == "__main__":
         print({k: round(v, 3) for k, v in rows[-1].items()})
     out = {k: float(np.nanmean([r[k] for r in rows])) for k in rows[0]}
     alt = []
-    for bi, (tr, te) in enumerate(bootstrap_splits(len(P), 30, seed=777)):
+    for bi, (tr, te) in enumerate(get_splits(P, 30, seed=777)):
         det = DuplicateDetector(k=3, seed=4000 + bi).fit([public(P[i]) for i in tr], local_gold(P, tr))
         pred, _ = det.predict([public(P[i]) for i in te])
         alt.append(prf(pred, local_gold(P, te))["F1"])
@@ -62,5 +62,5 @@ if __name__ == "__main__":
     out["F1_alternative_splits_n"] = len(alt)
     out["tokens_identical_without_gold"] = bool(same)
     out["n_boot"] = len(rows)
-    save("checks.json", out)
+    save("checks.json", out, meta("run_checks", nb, alternative_split_seed=777, n_boot_alternative=len(alt)))
     print({k: round(v, 4) if isinstance(v, float) else v for k, v in out.items()})

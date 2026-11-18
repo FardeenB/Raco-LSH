@@ -75,14 +75,15 @@ def one_bootstrap(args):
 if __name__ == "__main__":
     nb = int(sys.argv[1]) if len(sys.argv) > 1 else 100
     P = load_products(DATA)
-    jobs = [(bi, te) for bi, (tr, te) in enumerate(splits(len(P), nb))]
+    selection()
+    jobs = [(bi, te) for bi, (tr, te) in enumerate(get_splits(P, nb))]
     with Pool(2) as pool:
         allres = pool.map(one_bootstrap, jobs, chunksize=1)
     agg = {}
     for key in allres[0]:
         rows = [r[key] for r in allres if key in r]
         agg[key] = mean_rows(rows)
-    save("blocking.json", agg)
+    save("blocking.json", agg, meta("run_blocking", nb, n_hashes=N_HASH, ks=KS))
     for key in sorted(agg):
         if key.startswith("ours|r3|") or key.startswith("msmp"):
             a = agg[key]

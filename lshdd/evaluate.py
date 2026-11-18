@@ -13,6 +13,23 @@ def bootstrap_splits(n, n_boot, seed=0):
         yield train, test
 
 
+def cluster_bootstrap_splits(labels, n_boot, seed=0):
+    """Bootstrap over the duplicate clusters (products with equal label) as in sparker, the
+    framework of the MSM authors (SamplerImpl in eval/Sampler.scala of
+    github.com/nickvalstar/APFAProject): as many clusters as there are are drawn with replacement
+    from one pool; train = the drawn clusters, test = the clusters never drawn. Yields
+    (train_idx, test_idx) like bootstrap_splits; a cluster is never split over train and test."""
+    rng = np.random.default_rng(seed)
+    groups = {}
+    for i, g in enumerate(labels):
+        groups.setdefault(g, []).append(i)
+    groups = list(groups.values())
+    for _ in range(n_boot):
+        drawn = np.unique(rng.integers(0, len(groups), size=len(groups)))
+        train = np.array(sorted(i for d in drawn for i in groups[d]), dtype=np.int64)
+        yield train, np.setdiff1d(np.arange(len(labels)), train)
+
+
 def group_bootstrap_splits(labels, n_boot, seed=0):
     """Bootstrap over the duplicate groups (products with equal label), as in MSM (van Bezu et al.,
     SAC 2015): the ratio of duplicates versus non-duplicates is maintained by drawing the singleton

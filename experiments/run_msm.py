@@ -1,17 +1,26 @@
 """Experiment 3: MSM, MSMP and MSMP+ re-implemented as end-to-end baselines (lshdd/msm.py).
 
-Protocol of MSM (van Bezu et al., SAC 2015): bootstraps over the duplicate groups, so that the
-ratio of duplicates versus non-duplicates is maintained (common.group_splits). For every bootstrap
-the MSM parameters (gamma, alpha, beta, mu, epsilon, and whether MSM sees the MSMP+ cleaned data)
-are chosen by grid search on the training products, separately for every pre-selection, and F1 is
-measured on the out-of-bag products.
+Bootstraps over the duplicate clusters (common.get_splits, SPLIT=cluster by default). For every
+bootstrap the MSM parameters (gamma, alpha, beta, mu, epsilon, and whether MSM sees the MSMP+
+cleaned data) are chosen by grid search on the training products, separately for every
+pre-selection, and F1 is measured on the out-of-bag products.
     msm|all          MSM on every pair of different Web shops
     msmp|r<r>        MSM on the candidates of MSMP (title model words, classical banding)
     msmp_plus|r<r>   MSM on the candidates of MSMP+ (cleaned title + value model words)
 As in MSM, the similarity components of every pair are computed once for the whole data set and
 shared by all bootstraps (they only depend on the two products).
 
-usage: python experiments/run_msm.py [n_bootstraps] [n_processes] [variants, e.g. msm or msm,msmp]
+SELECTION=train picks the configuration with the best training F1. SELECTION=sparker reproduces
+the MSM authors' code (core/SparkWorker.scala and core/SparkResultsAggregator.scala of
+github.com/nickvalstar/APFAProject): the grid, in grid order, is cut into SPARKER_CHUNKS chunks of
+SPARKER_SLICES contiguous slices; every slice picks its best configuration on training F1, and the
+slices are then merged by TEST F1. That leaks the test set into the selection, so it is only
+used to show how optimistic the published values are.
+
+New variants are merged into an existing results/msm.json only when it was made with the same
+protocol, grid and code; otherwise the run stops before computing anything.
+
+usage: [SPLIT=..] [SELECTION=..] python experiments/run_msm.py [n_bootstraps] [n_processes] [variants, e.g. msm or msm,msmp]
 """
 import sys, os, json, time
 from itertools import product as grid
@@ -19,6 +28,7 @@ from multiprocessing import Pool
 from common import *
 from run_matching import evaluate
 from lshdd import baselines
+from lshdd import msm as msm_module
 from lshdd.msm import MSM, hsim, cluster, f1_path
 
 GAMMA = (0.6, 0.7, 0.8, 0.9)
@@ -26,8 +36,13 @@ ALPHA = (0.5, 0.6, 0.7, 0.8, 0.9)
 BETA = (0.0, 0.2, 0.4, 0.6)
 MU = (0.3, 0.5, 0.65, 0.8, 0.9)
 EPS = [round(float(e), 2) for e in np.arange(0.1, 0.86, 0.05)]
+CLEAN = (False, True)
 ROWS = {"msmp": (3, 4, 5, 6, 8), "msmp_plus": (3, 4, 5, 6)}
 VARIANTS = ("msm", "msmp", "msmp_plus")
+SPARKER_CHUNKS = 10     # numChunksParams default of sparker's Runner
+SPARKER_SLICES = 8      # numSlicesParams default = Spark parallelism (machine dependent)
+# Results of two runs may only be merged when all of these agree.
+MERGE_KEYS = ("split", "split_seed", "selection", "n_boot", "mode", "grid", "sparker_partitions", "code_hash")
 
 _G = {}
 
@@ -43,8 +58,8 @@ def global_components(P):
     return np.array(valid, dtype=np.int64), comps
 
 
-def _init(valid, comps, variants):
-    _G.update(valid=valid, comps=comps, variants=variants)
+def _init(valid, comps, variants, sel):
+    _G.update(valid=valid, comps=comps, variants=variants, selection=sel)
 
 
 def collection(P, ids, seed):
@@ -75,6 +90,23 @@ def collection(P, ids, seed):
     return pre, sel
 
 
+def settings():
+    """MSM settings (clean, gamma index, alpha, beta, mu) in grid order; epsilon varies fastest
+    within a setting, so configuration c is (settings()[c // len(EPS)], EPS[c % len(EPS)])."""
+    return list(grid(CLEAN, range(len(GAMMA)), ALPHA, BETA, MU))
+
+
+def sparker_choice(f_train, f_test):
+    """Configuration chosen by sparker: best training F1 within every contiguous slice of the grid
+    (first maximum, as findBestAlgorithm), then the slice winner with the best test F1."""
+    winners = []
+    for chunk in np.array_split(np.arange(len(f_train)), SPARKER_CHUNKS):
+        for part in np.array_split(chunk, SPARKER_SLICES):
+            if len(part):
+                winners.append(int(part[np.argmax(f_train[part])]))
+    return max(winners, key=f_test)
+
+
 def one_bootstrap(args):
     bi, train, test = args
     P = load_products(DATA)
@@ -83,43 +115,79 @@ def one_bootstrap(args):
     gc_te = cleaned_gold(P, test)
     _, sel_tr = collection(P, train, 500 + bi)
     pre_te, sel_te = collection(P, test, 900 + bi)
-    best = {v: (-1.0, None) for v in sel_tr}
-    for clean in (False, True):
-        for g, a, b, mu in grid(range(len(GAMMA)), ALPHA, BETA, MU):
-            d = 1.0 - hsim(comps[clean], g, a, b, mu)
-            for v, (idx, pairs) in sel_tr.items():
-                f = f1_path(len(train), pairs, d[idx], g_tr, EPS)
-                k = int(np.argmax(f))
-                if f[k] > best[v][0]:
-                    best[v] = (f[k], (clean, g, a, b, mu, EPS[k]))
+    S = settings()
+    f_tr = {v: np.empty((len(S), len(EPS))) for v in sel_tr}
+    for s, (clean, g, a, b, mu) in enumerate(S):
+        d = 1.0 - hsim(comps[clean], g, a, b, mu)
+        for v, (idx, pairs) in sel_tr.items():
+            f_tr[v][s] = f1_path(len(train), pairs, d[idx], g_tr, EPS)
     res = {}
-    for v, (f_tr, (clean, g, a, b, mu, eps)) in best.items():
+    for v in sel_tr:
+        flat = f_tr[v].ravel()
+        if _G["selection"] == "train":
+            c = int(np.argmax(flat))
+        else:
+            idx, pairs = sel_te[v]
+            test_f1 = {}
+
+            def f_test(c):
+                s = c // len(EPS)
+                if s not in test_f1:
+                    clean, g, a, b, mu = S[s]
+                    d = 1.0 - hsim(comps[clean], g, a, b, mu)
+                    test_f1[s] = f1_path(len(test), pairs, d[idx], g_te, EPS)
+                return test_f1[s][c % len(EPS)]
+            c = sparker_choice(flat, f_test)
+        (clean, g, a, b, mu), eps = S[c // len(EPS)], EPS[c % len(EPS)]
         t0 = time.perf_counter()
         idx, pairs = sel_te[v]
         d = 1.0 - hsim(comps[clean], g, a, b, mu)
         pred = cluster(len(test), pairs, d[idx], eps)
         row = evaluate(pred, pre_te[v], g_te, gc_te, len(test))
-        row.update(F1_train=f_tr, clean=float(clean), gamma=GAMMA[g], alpha=a, beta=b, mu=mu, epsilon=eps,
+        row.update(F1_train=flat[c], clean=float(clean), gamma=GAMMA[g], alpha=a, beta=b, mu=mu, epsilon=eps,
                    cluster_seconds=time.perf_counter() - t0)
         res[v] = row
     return res
+
+
+def run_meta(nb, sel):
+    return meta("run_msm", nb, selection=sel, mode="paper", conflict=msm_module.CONFLICT,
+                grid=dict(clean=CLEAN, gamma=GAMMA, alpha=ALPHA, beta=BETA, mu=MU, epsilon=EPS, rows=ROWS),
+                sparker_partitions=[SPARKER_CHUNKS, SPARKER_SLICES] if sel == "sparker" else None)
+
+
+def mergeable(path, m, variants):
+    """Results of earlier runs to keep: those of other variants, if made under the same settings.
+    Stops the run when they were made under other settings (before any work is done)."""
+    if not os.path.exists(path) or set(variants) == set(VARIANTS):
+        return {}
+    old, om = load_results(os.path.basename(path))
+    m = json.loads(json.dumps(m))                     # tuples -> lists, as read back from JSON
+    diff = [k for k in MERGE_KEYS if om is None or om.get(k) != m.get(k)]
+    if diff:
+        raise SystemExit("%s was made with different settings (%s); re-run all variants "
+                         "(variants msm,msmp,msmp_plus) or move the file away." % (path, ", ".join(diff)))
+    return {k: v for k, v in old.items() if k.split("|")[0] not in variants}
 
 
 if __name__ == "__main__":
     nb = int(sys.argv[1]) if len(sys.argv) > 1 else 100
     nproc = int(sys.argv[2]) if len(sys.argv) > 2 else 4
     variants = tuple(sys.argv[3].split(",")) if len(sys.argv) > 3 else VARIANTS
+    unknown = set(variants) - set(VARIANTS)
+    if unknown:
+        raise SystemExit("unknown variants: %s" % ", ".join(sorted(unknown)))
+    sel = selection(SELECTIONS)
     P = load_products(DATA)
+    m = run_meta(nb, sel)
+    keep = mergeable(os.path.join(RESULTS, "msm.json"), m, variants)
     valid, comps = global_components(P)
-    jobs = [(bi, tr, te) for bi, (tr, te) in enumerate(group_splits(P, nb))]
-    with Pool(nproc, initializer=_init, initargs=(valid, comps, variants)) as pool:
+    jobs = [(bi, tr, te) for bi, (tr, te) in enumerate(get_splits(P, nb))]
+    with Pool(nproc, initializer=_init, initargs=(valid, comps, variants, sel)) as pool:
         allres = pool.map(one_bootstrap, jobs, chunksize=1)
     agg = {key: mean_rows([r[key] for r in allres]) for key in allres[0]}
-    path = os.path.join(RESULTS, "msm.json")
-    if os.path.exists(path):
-        with open(path) as f:
-            agg = {**{k: v for k, v in json.load(f).items() if k.split("|")[0] not in variants}, **agg}
-    save("msm.json", agg)
+    agg = {**keep, **agg}
+    save("msm.json", agg, m)
     for key in sorted(agg, key=lambda s: -agg[s]["frac"]):
         a = agg[key]
         print("%-18s frac=%.5f PC=%.3f | F1=%.3f (sd %.3f) P=%.3f R=%.3f | train F1=%.3f | clean=%.2f "
