@@ -66,7 +66,7 @@ from itertools import product as grid
 from multiprocessing import Pool
 from common import *
 from lshdd import baselines
-from lshdd.msm import MSM, MODES, hsim, cluster, f1_path, same_shop
+from lshdd.msm import MSM, MODES, hsim, title_sim, cluster, f1_path, same_shop
 
 MODE = os.environ.get("MSM_MODE", "code")
 if MODE not in MODES:
@@ -182,12 +182,22 @@ def one_bootstrap(args):
     sel_te = collection(P, test, 900 + bi, variants, g_te)
     # variants that score the same training pairs (e.g. two t with the same bands) share the search
     shared = {sel["key"]: sel for sel in sel_tr.values()}
+    # the search only needs the components of the training pairs; positions in that subset:
+    need = np.unique(np.concatenate([sel["idx"] for sel in shared.values()]))
+    sub = {clean: {k: v[..., need] for k, v in comps[clean].items()} for clean in comps}
+    at = {key: np.searchsorted(need, sel["idx"]) for key, sel in shared.items()}
     S = settings()
-    f_tr = {key: np.empty((len(S), len(EPS))) for key in shared}
+    # title_sim depends on (clean, alpha, beta) only: one per group of settings
+    groups = {}
     for s, (clean, g, a, b, mu) in enumerate(S):
-        d = 1.0 - hsim(comps[clean], g, a, b, mu, cfg)
-        for key, sel in shared.items():
-            f_tr[key][s] = f1_path(len(train), sel["pairs"], d[sel["idx"]], g_tr, EPS, inf_tr)
+        groups.setdefault((clean, a, b), []).append((s, g, mu))
+    f_tr = {key: np.empty((len(S), len(EPS))) for key in shared}
+    for (clean, a, b), members in groups.items():
+        title = title_sim(sub[clean], a, b, cfg)
+        for s, g, mu in members:
+            d = 1.0 - hsim(sub[clean], g, a, b, mu, cfg, title)
+            for key, sel in shared.items():
+                f_tr[key][s] = f1_path(len(train), sel["pairs"], d[at[key]], g_tr, EPS, inf_tr)
     res, test_f1 = {}, {}
     for v, tr in sel_tr.items():
         te = sel_te[v]

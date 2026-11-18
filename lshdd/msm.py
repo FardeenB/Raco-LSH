@@ -305,9 +305,10 @@ def title_sim(c, alpha, beta, cfg=PAPER):
     return np.where(c["cos"] > alpha, 1.0, s)
 
 
-def hsim(c, g, alpha, beta, mu, cfg=PAPER):
-    """hSim for every pair of the components `c`, with gamma = gammas[g]."""
-    t = title_sim(c, alpha, beta, cfg)
+def hsim(c, g, alpha, beta, mu, cfg=PAPER, title=None):
+    """hSim for every pair of the components `c`, with gamma = gammas[g]. `title` may pass
+    title_sim(c, alpha, beta, cfg) when it is already known (it does not depend on gamma, mu)."""
+    t = title_sim(c, alpha, beta, cfg) if title is None else title
     with np.errstate(divide="ignore", invalid="ignore"):
         r = np.where(c["minf"] > 0, c["m"][g] / c["minf"], 0.0)
     if cfg.theta_cap:
@@ -317,16 +318,25 @@ def hsim(c, g, alpha, beta, mu, cfg=PAPER):
     return np.where(t == -1, r * avg + (1 - r) * mwp, th1 * avg + (1 - mu - th1) * mwp + mu * t)
 
 
-def same_shop(shop):
-    """infinite(a, b) of CODE: only products of the same shop are at distance infinity."""
-    return lambda a, b: shop[a] == shop[b]
+class same_shop:
+    """infinite(a, b) of CODE: only products of the same shop are at distance infinity. A class
+    rather than a closure, so that the compiled clustering can recognise it."""
+
+    def __init__(self, shop):
+        self.shop = list(shop)
+        ids = {s: i for i, s in enumerate(dict.fromkeys(self.shop))}
+        self.ids = np.array([ids[s] for s in self.shop], dtype=np.int64)
+
+    def __call__(self, a, b):
+        return self.shop[a] == self.shop[b]
 
 
 def _merges(n, pairs, dist, max_eps, infinite=None):
     """Adapted single linkage: yields (distance, cluster A, cluster B) for every merge, in order.
     Only `pairs` can trigger a merge; merging stops beyond max_eps. infinite(a, b) tells whether
     two products are at distance infinity (no cluster may contain both); by default every pair
-    outside `pairs` is."""
+    outside `pairs` is. Reference implementation of _merge_kernel (used when numba is missing or
+    `infinite` is another predicate)."""
     if infinite is None:
         finite = set(pairs)
         infinite = lambda a, b: ((a, b) if a < b else (b, a)) not in finite
@@ -352,9 +362,160 @@ def _merges(n, pairs, dist, max_eps, infinite=None):
             del members[rj]
 
 
+try:
+    from numba import njit
+except ImportError:                    # pure-Python clustering (same results, much slower)
+    njit = None
+
+if njit is not None:
+    @njit(cache=True)
+    def _merge_kernel(n, pa, pb, order, by_shop, shop, keys, label):
+        """_merges over the pairs in `order` (already sorted, all below the largest epsilon).
+        by_shop: only pairs of one shop (shop ids < 63) are at distance infinity; otherwise every
+        pair whose key a * n + b is not in the sorted array `keys` is. Returns the pair that
+        triggered every merge, |A| |B|, the number of pairs across A and B with equal label, and
+        the cluster root of every product at the end."""
+        parent = np.arange(n)
+        head = np.arange(n)
+        tail = np.arange(n)
+        nxt = np.full(n, -1)
+        size = np.ones(n, dtype=np.int64)
+        mask = np.zeros(n, dtype=np.int64)
+        for i in range(n):
+            mask[i] = np.int64(1) << shop[i]
+        m = len(order)
+        out_t = np.empty(m, dtype=np.int64)
+        out_np = np.empty(m, dtype=np.int64)
+        out_tp = np.empty(m, dtype=np.int64)
+        k = 0
+        for t in order:
+            ri = pa[t]
+            while parent[ri] != ri:
+                parent[ri] = parent[parent[ri]]
+                ri = parent[ri]
+            rj = pb[t]
+            while parent[rj] != rj:
+                parent[rj] = parent[parent[rj]]
+                rj = parent[rj]
+            if ri == rj:
+                continue
+            if by_shop:
+                if mask[ri] & mask[rj]:
+                    continue
+            else:
+                ok = True
+                a = head[ri]
+                while a != -1 and ok:
+                    b = head[rj]
+                    while b != -1:
+                        key = a * n + b if a < b else b * n + a
+                        p = np.searchsorted(keys, key)
+                        if p == len(keys) or keys[p] != key:
+                            ok = False
+                            break
+                        b = nxt[b]
+                    a = nxt[a]
+                if not ok:
+                    continue
+            tp = 0
+            a = head[ri]
+            while a != -1:
+                b = head[rj]
+                while b != -1:
+                    if label[a] == label[b]:
+                        tp += 1
+                    b = nxt[b]
+                a = nxt[a]
+            out_t[k] = t
+            out_np[k] = size[ri] * size[rj]
+            out_tp[k] = tp
+            k += 1
+            parent[rj] = ri
+            nxt[tail[ri]] = head[rj]
+            tail[ri] = tail[rj]
+            size[ri] += size[rj]
+            mask[ri] |= mask[rj]
+        roots = np.empty(n, dtype=np.int64)
+        for i in range(n):
+            r = i
+            while parent[r] != r:
+                r = parent[r]
+            roots[i] = r
+        return out_t[:k], out_np[:k], out_tp[:k], roots
+
+
+_CACHE = {}           # id(object) -> (object, derived arrays); objects are fixed within a bootstrap
+_CACHE_SIZE = 64
+
+
+def _cached(obj, key, make):
+    """make(), remembered for this very object (identity, not equality); oldest entries go first."""
+    hit = _CACHE.get((id(obj), key))
+    if hit is not None and hit[0] is obj:
+        return hit[1]
+    if len(_CACHE) >= _CACHE_SIZE:
+        del _CACHE[next(iter(_CACHE))]
+    value = make()
+    _CACHE[id(obj), key] = (obj, value)
+    return value
+
+
+def _pair_arrays(n, pairs):
+    pa = np.fromiter((p[0] for p in pairs), dtype=np.int64, count=len(pairs))
+    pb = np.fromiter((p[1] for p in pairs), dtype=np.int64, count=len(pairs))
+    return pa, pb
+
+
+def _gold_labels(n, gold):
+    """Cluster label of every product such that gold = all pairs of equal label, or None when
+    gold is not of that form (then the compiled clustering cannot count true positives)."""
+    parent = list(range(n))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for a, b in gold:
+        parent[find(a)] = find(b)
+    label = np.array([find(i) for i in range(n)], dtype=np.int64)
+    sizes = np.bincount(label, minlength=n)
+    return label if int((sizes * (sizes - 1) // 2).sum()) == len(gold) else None
+
+
+def _fast_merges(n, pairs, dist, max_eps, infinite, label):
+    """(distances, |A| |B|, true positives, roots) of the merges via _merge_kernel, or None when
+    the compiled path does not apply."""
+    if njit is None or not (infinite is None or isinstance(infinite, same_shop)):
+        return None
+    if isinstance(infinite, same_shop) and infinite.ids.max(initial=0) > 62:
+        return None
+    dist = np.asarray(dist, dtype=np.float64)
+    below = np.flatnonzero(dist <= max_eps)
+    order = below[np.argsort(dist[below], kind="stable")]
+    pa, pb = _cached(pairs, ("arrays", n), lambda: _pair_arrays(n, pairs))
+    if isinstance(infinite, same_shop):
+        shop, keys = infinite.ids, np.zeros(0, dtype=np.int64)
+    else:
+        shop = np.zeros(n, dtype=np.int64)
+        keys = _cached(pairs, ("keys", n), lambda: np.unique(np.minimum(pa, pb) * n + np.maximum(pa, pb)))
+    t, npairs, tp, roots = _merge_kernel(n, pa, pb, order, infinite is not None, shop, keys,
+                                         np.arange(n, dtype=np.int64) if label is None else label)
+    return dist[t], npairs, tp, roots
+
+
 def cluster(n, pairs, dist, eps, infinite=None):
     """Pairs (i, j), i<j, that end up in the same cluster."""
+    fast = _fast_merges(n, pairs, dist, eps, infinite, None)
     out = set()
+    if fast is not None:
+        groups = {}
+        for i, r in enumerate(fast[3].tolist()):
+            groups.setdefault(r, []).append(i)
+        for g in groups.values():
+            out.update((a, b) for i, a in enumerate(g) for b in g[i + 1:])
+        return out
     for _, A, B in _merges(n, pairs, dist, eps, infinite):
         out.update((a, b) if a < b else (b, a) for a in A for b in B)
     return out
@@ -362,6 +523,16 @@ def cluster(n, pairs, dist, eps, infinite=None):
 
 def f1_path(n, pairs, dist, gold, epsilons, infinite=None):
     """F1 of the clustering for every threshold in the ascending list `epsilons` (one pass)."""
+    label = _cached(gold, ("labels", n), lambda: _gold_labels(n, gold)) if njit is not None else None
+    fast = _fast_merges(n, pairs, dist, epsilons[-1], infinite, label) if label is not None else None
+    if fast is not None:
+        d, npairs, tp = fast[0], np.cumsum(fast[1]), np.cumsum(fast[2])
+        out = []
+        for e in epsilons:
+            k = int(np.searchsorted(d, e, side="right"))
+            npred, hits = (int(npairs[k - 1]), int(tp[k - 1])) if k else (0, 0)
+            out.append(2 * hits / (npred + len(gold)) if npred + len(gold) else 0.0)
+        return out
     out, tp, npred, k = [], 0, 0, 0
     for d, A, B in _merges(n, pairs, dist, epsilons[-1], infinite):
         while d > epsilons[k]:
