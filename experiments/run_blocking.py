@@ -42,19 +42,8 @@ OURS = {
 
 def classical_lsh(products, tokenizer, gold, seed):
     """MSMP / MSMP+ style: unweighted MinHash, n = 50% of the vector length, classical banding."""
-    toks = [tokenizer(p) for p in products]
-    vocab = Vocabulary(toks)
-    n = max(2, len(vocab.tokens) // 2)
-    sig = signatures(vocab.ids, token_codes(vocab.tokens), None, n, seed=seed)
-    shops = np.array([p["shop"] for p in products])
-    out = {}
-    for r in [1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 15, 20]:
-        b = n // r
-        if b < 1:
-            continue
-        c = candidate_pairs(sig, b, r, block=shops)
-        out["r%d" % r] = blocking_scores(c, gold, len(products))
-    return out
+    cands = baselines.classical_candidates(products, tokenizer, [1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 15, 20], seed)
+    return {"r%d" % r: blocking_scores(c, gold, len(products)) for r, c in cands.items()}
 
 
 def one_bootstrap(args):

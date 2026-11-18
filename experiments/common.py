@@ -4,7 +4,7 @@ from itertools import combinations
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 import numpy as np
 from lshdd.data import load_products
-from lshdd.evaluate import bootstrap_splits, local_gold, blocking_scores, prf
+from lshdd.evaluate import bootstrap_splits, group_bootstrap_splits, local_gold, blocking_scores, prf
 
 DATA = os.environ.get("TV_DATA", os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                                "..", "data", "TVs-all-merged.json"))
@@ -14,6 +14,11 @@ SPLIT_SEED = 2026
 
 def splits(n, n_boot):
     return list(bootstrap_splits(n, n_boot, seed=SPLIT_SEED))
+
+
+def group_splits(products, n_boot):
+    """Bootstrap splits of the MSM protocol (duplicate groups are kept together)."""
+    return list(group_bootstrap_splits([p["gold"] for p in products], n_boot, seed=SPLIT_SEED))
 
 
 def cleaned_gold(products, idx):

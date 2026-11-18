@@ -8,6 +8,11 @@ Both use ordinary (unweighted) MinHash with a signature of 50% of the vector len
 classical banding technique.
 """
 import re
+import numpy as np
+
+from .represent import Vocabulary
+from .minhash import signatures, token_codes
+from .lsh import candidate_pairs
 
 _MW_TITLE = re.compile(r'[a-zA-Z0-9]*(?:(?:[0-9]+[^0-9, ]+)|(?:[^0-9, ]+[0-9]+))[a-zA-Z0-9]*')
 _MW_VALUE = re.compile(r'^\d+(?:\.\d+)?[a-zA-Z]+$|^\d+(?:\.\d+)?$')
@@ -46,3 +51,14 @@ def msmp_plus_tokenizer(products, decimals_only=True, title_mw_in_values=True):
                         out.add(("num", num))
         cache[id(p)] = out
     return lambda p: cache[id(p)]
+
+
+def classical_candidates(products, tokenizer, rows, seed):
+    """Candidate pairs of the MSMP / MSMP+ pre-selection for every r in `rows` (b = n // r bands);
+    pairs within one Web shop are skipped."""
+    toks = [tokenizer(p) for p in products]
+    vocab = Vocabulary(toks)
+    n = max(2, len(vocab.tokens) // 2)
+    sig = signatures(vocab.ids, token_codes(vocab.tokens), None, n, seed=seed)
+    shops = np.array([p["shop"] for p in products])
+    return {r: candidate_pairs(sig, n // r, r, block=shops) for r in rows if n // r >= 1}
