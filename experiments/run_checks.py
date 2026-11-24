@@ -5,9 +5,11 @@
 2. Robustness: F1 at k=3 on a second, independent set of bootstrap splits.
 3. Wall-clock time of the LSH pipeline versus scoring all cross-shop pairs, on the test
    collections and on the complete data set (all pairs of the complete data set: first
-   N_FULL_EXHAUSTIVE bootstraps only). Times are medians over the bootstraps, so that one run
-   slowed down by other activity on the machine (typically the first) does not dominate; F1 and
-   counts are means. Run this experiment on an otherwise idle machine.
+   N_FULL_EXHAUSTIVE bootstraps only). Times are the minimum over the bootstraps: every bootstrap
+   repeats (nearly) the same computation, and slower repetitions only measure interference
+   (other processes, thermal throttling of a laptop under sustained load), as the documentation of
+   Python's timeit module explains. F1 and counts are means. Run this experiment on an otherwise
+   idle machine.
 
 usage: python experiments/run_checks.py [n_bootstraps]
 """
@@ -55,7 +57,7 @@ if __name__ == "__main__":
                          n_test=len(te), full_predict_seconds=t_full, full_n_candidates=len(cands_full),
                          full_exhaustive_seconds=t_full_all))
         print({k: round(v, 3) for k, v in rows[-1].items()})
-    out = {k: float((np.nanmedian if k.endswith("_seconds") else np.nanmean)([r[k] for r in rows]))
+    out = {k: float((np.nanmin if k.endswith("_seconds") else np.nanmean)([r[k] for r in rows]))
            for k in rows[0]}
     alt = []
     for bi, (tr, te) in enumerate(get_splits(P, 30, seed=777)):
@@ -68,5 +70,5 @@ if __name__ == "__main__":
     out["tokens_identical_without_gold"] = bool(same)
     out["n_boot"] = len(rows)
     save("checks.json", out, meta("run_checks", nb, alternative_split_seed=777, n_boot_alternative=len(alt),
-                                  timing="median over bootstraps", n_full_exhaustive=min(nb, N_FULL_EXHAUSTIVE)))
+                                  timing="minimum over bootstraps", n_full_exhaustive=min(nb, N_FULL_EXHAUSTIVE)))
     print({k: round(v, 4) if isinstance(v, float) else v for k, v in out.items()})
