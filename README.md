@@ -51,9 +51,7 @@ classifier comes from scikit-learn.
 - **MSMP+** (Hartveld et al., 2018): MSMP with data cleaning and model words from the attribute
   values.
 
-Where the papers leave details open, the re-implementation follows the authors' public code
-(github.com/nickvalstar/APFAProject). The module docstrings list every such choice. The MSM
-parameters are chosen by grid search on the training products of each bootstrap.
+The MSM parameters are chosen by grid search on the training products of each bootstrap.
 
 ## Evaluation protocol
 
