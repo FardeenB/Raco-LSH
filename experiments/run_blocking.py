@@ -1,15 +1,11 @@
 """Experiment 1: quality of the LSH pre-selection (PC, PQ, F1*) versus fraction of comparisons.
 
-usage: python experiments/run_blocking.py [n_bootstraps]
+usage: python experiments/run_blocking.py [n_bootstraps] [n_processes]
 """
-import sys
 from multiprocessing import Pool
 from common import *
 from lshdd.pipeline import Blocker
-from lshdd.tokens import product_tokens, title_tokens, value_tokens
-from lshdd.represent import Vocabulary
-from lshdd.minhash import signatures, token_codes
-from lshdd.lsh import candidate_pairs, collision_counts
+from lshdd.tokens import product_tokens
 from lshdd import baselines
 
 KS = [1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512]
@@ -42,19 +38,8 @@ OURS = {
 
 def classical_lsh(products, tokenizer, gold, seed):
     """MSMP / MSMP+ style: unweighted MinHash, n = 50% of the vector length, classical banding."""
-    toks = [tokenizer(p) for p in products]
-    vocab = Vocabulary(toks)
-    n = max(2, len(vocab.tokens) // 2)
-    sig = signatures(vocab.ids, token_codes(vocab.tokens), None, n, seed=seed)
-    shops = np.array([p["shop"] for p in products])
-    out = {}
-    for r in [1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 15, 20]:
-        b = n // r
-        if b < 1:
-            continue
-        c = candidate_pairs(sig, b, r, block=shops)
-        out["r%d" % r] = blocking_scores(c, gold, len(products))
-    return out
+    cands = baselines.classical_candidates(products, tokenizer, [1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 15, 20], seed)
+    return {"r%d" % r: blocking_scores(c, gold, len(products)) for r, c in cands.items()}
 
 
 def one_bootstrap(args):
@@ -84,16 +69,16 @@ def one_bootstrap(args):
 
 
 if __name__ == "__main__":
-    nb = int(sys.argv[1]) if len(sys.argv) > 1 else 100
+    nb, nproc = cli_args()
     P = load_products(DATA)
-    jobs = [(bi, te) for bi, (tr, te) in enumerate(splits(len(P), nb))]
-    with Pool(2) as pool:
+    jobs = [(bi, te) for bi, (tr, te) in enumerate(get_splits(P, nb))]
+    with Pool(nproc) as pool:
         allres = pool.map(one_bootstrap, jobs, chunksize=1)
     agg = {}
     for key in allres[0]:
         rows = [r[key] for r in allres if key in r]
         agg[key] = mean_rows(rows)
-    save("blocking.json", agg)
+    save("blocking.json", agg, meta("run_blocking", nb, n_hashes=N_HASH, ks=KS))
     for key in sorted(agg):
         if key.startswith("ours|r3|") or key.startswith("msmp"):
             a = agg[key]

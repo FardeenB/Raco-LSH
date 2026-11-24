@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Windows / cloud-sync folder metadata
+desktop.ini
+Thumbs.db
+
+# Copyrighted papers and course material, kept locally only
+Background literature/
+.pytest_cache/

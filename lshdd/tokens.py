@@ -2,6 +2,8 @@
 
 Every product is turned into a set of (class, token) pairs. No attribute keys are used;
 only the title and the *values* of the key-value pairs, so no schema alignment is needed.
+The Web-shop name ("Newegg.com - ...", "... - Best Buy") is removed from the title first: it
+says nothing about the product and is never shared by a cross-shop pair.
 
 Token classes
     tw   title word (alphabetic)
@@ -9,8 +11,8 @@ Token classes
     tn   title bare number
     id   identifier-like token (letters and digits mixed, not a quantity), from the title
     ip   proper prefix of an identifier-like title token (prefix expansion)
-    vi   identifier-like token found in an attribute value
     vq   quantity found in an attribute value, typed by unit and quantised (fractions parsed)
+product_tokens() keeps every class except tn.
 """
 import re
 import html
@@ -22,6 +24,10 @@ _LB = re.compile(r'(?<=\d)\s*(?:lbs?\.?|pounds?)(?![a-z])')
 _SPLIT = re.compile(r'[\s/,;:()\[\]|+*]+')
 _QTY = re.compile(r'^\d+(?:\.\d+)?[a-z]+$')
 _NUM = re.compile(r'^\d+(?:\.\d+)?$')
+
+# shop name as title prefix ("Newegg.com - ...") or suffix ("... - Best Buy")
+_SHOP_NAME = r'(?:newegg\.com|best\s*buy|thenerds\.net|amazon\.com)'
+_SHOP = re.compile(r'^\s*%s\s*-\s*|\s*-\s*%s\s*$' % (_SHOP_NAME, _SHOP_NAME), re.I)
 
 # number (optionally a mixed fraction such as 13-7/8 or 45 2/7) followed by an optional unit
 _MEAS = re.compile(
@@ -37,6 +43,10 @@ def normalise(text):
     s = _HZ.sub("hz ", s)
     s = _LB.sub("lb ", s)
     return s
+
+
+def strip_shop(title):
+    return _SHOP.sub(" ", title)
 
 
 def _is_mixed(t):
@@ -62,7 +72,7 @@ def _word_tokens(s):
 
 def title_tokens(title, min_prefix=4, prefixes=True):
     out = set()
-    for t in _word_tokens(normalise(title)):
+    for t in _word_tokens(normalise(strip_shop(title))):
         if _NUM.match(t):
             out.add(("tn", t))
         elif _QTY.match(t):
@@ -90,7 +100,7 @@ def _quantise(x, unit):
     return ["a%d" % a, "b%d" % b]
 
 
-def value_tokens(features, ids=True):
+def value_tokens(features):
     out = set()
     for v in features.values():
         s = normalise(v)
@@ -104,16 +114,12 @@ def value_tokens(features, ids=True):
             unit = _UNIT.get(unit, unit)
             for q in _quantise(x, unit):
                 out.add(("vq", unit + q))
-        if ids:
-            for t in _word_tokens(s):
-                if _is_mixed(t) and len(t) >= 5 and not _QTY.match(t) and '.' not in t:
-                    out.add(("vi", t))
     return out
 
 
 DEFAULT_CLASSES = ("tw", "tq", "id", "ip", "vq")
 
 
-def product_tokens(p, classes=DEFAULT_CLASSES):
-    toks = title_tokens(p["title"]) | value_tokens(p["features"], ids="vi" in classes)
-    return {t for t in toks if t[0] in classes}
+def product_tokens(p):
+    toks = title_tokens(p["title"]) | value_tokens(p["features"])
+    return {t for t in toks if t[0] in DEFAULT_CLASSES}

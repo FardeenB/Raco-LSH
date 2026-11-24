@@ -8,7 +8,7 @@ from sklearn.model_selection import cross_val_predict
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
-from .tokens import product_tokens, DEFAULT_CLASSES
+from .tokens import product_tokens
 from .represent import Vocabulary, idf_weights
 from .minhash import signatures, token_codes
 from .lsh import collision_counts
@@ -18,12 +18,10 @@ from .features import PairFeaturizer
 class Blocker:
     """Candidate generation. Unsupervised: it only sees the collection to be de-duplicated."""
 
-    def __init__(self, gamma=2.0, n_hashes=1200, rows=3, classes=DEFAULT_CLASSES,
-                 weighted=True, same_shop_rule=True, seed=7, tokenizer=None):
+    def __init__(self, gamma=2.0, n_hashes=1200, rows=3, weighted=True, seed=7, tokenizer=None):
         self.gamma, self.n_hashes, self.rows = gamma, n_hashes, rows
-        self.classes, self.weighted = classes, weighted
-        self.same_shop_rule, self.seed = same_shop_rule, seed
-        self.tokenizer = tokenizer or (lambda p: product_tokens(p, self.classes))
+        self.weighted, self.seed = weighted, seed
+        self.tokenizer = tokenizer or product_tokens
 
     @property
     def bands(self):
@@ -37,7 +35,7 @@ class Blocker:
         w = idf_weights(vocab, self.gamma) if self.weighted else np.ones(len(vocab.tokens))
         sig = signatures(vocab.ids, token_codes(vocab.tokens), w if self.weighted else None,
                          self.bands * self.rows, seed=self.seed)
-        shops = np.array([p["shop"] for p in products]) if self.same_shop_rule else None
+        shops = np.array([p["shop"] for p in products])
         counts = collision_counts(sig, self.bands, self.rows, block=shops)
         return dict(products=products, tokens=toks, vocab=vocab, weights=w, counts=counts,
                     seconds=time.perf_counter() - t0)

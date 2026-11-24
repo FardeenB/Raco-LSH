@@ -4,7 +4,8 @@ For every bootstrap the matcher is trained on the LSH candidates of the training
 applied to the LSH candidates of the out-of-bag products. Sweeping k (and r) traces the
 efficiency / effectiveness trade-off.
 
-usage: python experiments/run_matching.py [n_bootstraps] [n_bootstraps_exhaustive]
+usage: python experiments/run_matching.py [n_bootstraps] [n_processes] [n_bootstraps_exhaustive]
+(n_bootstraps_exhaustive: bootstraps that also classify all cross-shop pairs; default all)
 """
 import sys, time
 from itertools import combinations
@@ -90,20 +91,18 @@ def one_bootstrap(args):
 
 
 if __name__ == "__main__":
-    nb = int(sys.argv[1]) if len(sys.argv) > 1 else 100
-    nex = int(sys.argv[2]) if len(sys.argv) > 2 else 10
+    nb, nproc = cli_args()
+    nex = int(sys.argv[3]) if len(sys.argv) > 3 else nb
     P = load_products(DATA)
-    jobs = [(bi, tr, te, bi < nex) for bi, (tr, te) in enumerate(splits(len(P), nb))]
-    with Pool(2) as pool:
+    jobs = [(bi, tr, te, bi < nex) for bi, (tr, te) in enumerate(get_splits(P, nb))]
+    with Pool(nproc) as pool:
         allres = pool.map(one_bootstrap, jobs, chunksize=1)
     agg = {}
     keys = set().union(*[r.keys() for r in allres])
     for key in keys:
         rows = [r[key] for r in allres if key in r and r[key] is not None]
         agg[key] = mean_rows(rows)
-    per_boot = {key: [r[key]["F1"] for r in allres if key in r] for key in keys}
-    save("matching.json", agg)
-    save("matching_per_bootstrap_F1.json", per_boot)
+    save("matching.json", agg, meta("run_matching", nb, n_hashes=N_HASH, grid=GRID, n_boot_exhaustive=nex))
     for key in sorted(agg, key=lambda s: (s.split("|")[0], agg[s]["frac"])):
         a = agg[key]
         print("%-24s frac=%.5f PC=%.3f PQ=%.3f | F1=%.3f P=%.3f R=%.3f | clean F1=%.3f  (n=%d)" % (
