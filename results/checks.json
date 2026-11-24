@@ -1,0 +1,31 @@
+{
+ "_meta": {
+  "script": "run_checks",
+  "n_boot": 10,
+  "split": "cluster",
+  "split_seed": 2026,
+  "git_commit": "986b2ac",
+  "git_dirty": false,
+  "code_hash": "a7235af620c6",
+  "date": "2026-11-24T21:57:50",
+  "alternative_split_seed": 777,
+  "n_boot_alternative": 30,
+  "timing": "minimum over bootstraps",
+  "n_full_exhaustive": 5
+ },
+ "F1": 0.8773889876606342,
+ "fit_seconds": 0.9064342999990913,
+ "predict_seconds": 0.4169400999962818,
+ "exhaustive_predict_seconds": 3.0176260999942315,
+ "n_candidates": 215.6,
+ "n_all_pairs": 105832.2,
+ "n_test": 597.5,
+ "full_predict_seconds": 1.0934471000000485,
+ "full_n_candidates": 949.5,
+ "full_exhaustive_seconds": 23.830592199999955,
+ "F1_alternative_splits_mean": 0.8671407179054225,
+ "F1_alternative_splits_sd": 0.019441494825866518,
+ "F1_alternative_splits_n": 30,
+ "tokens_identical_without_gold": true,
+ "n_boot": 10
+}
