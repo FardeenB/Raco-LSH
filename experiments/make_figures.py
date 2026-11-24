@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RES = os.environ.get("RESULTS_DIR", os.path.join(HERE, "..", "results"))
-OUT = os.path.join(HERE, "..", "paper", "figures")
+OUT = os.environ.get("FIG_DIR", os.path.join(HERE, "..", "paper", "figures"))
 os.makedirs(OUT, exist_ok=True)
 
 BLUE, ORANGE, AQUA, INK, MUTED, GRID = "#2a78d6", "#eb6834", "#1baf7a", "#0b0b0b", "#52514e", "#e4e3df"
@@ -68,10 +68,16 @@ def combined_figure():
             markeredgecolor="white", markeredgewidth=0.4)
     ax.plot([r["frac"] for r in wj], [r["F1"] for r in wj], color=AQUA, marker="D", markersize=2.4, linestyle="-.",
             markeredgecolor="white", markeredgewidth=0.4)
-    ax.annotate("classifier", (rf[-4]["frac"], rf[-4]["F1"]), textcoords="offset points", xytext=(0, -9), fontsize=6.3, color=INK, ha="center")
-    ax.annotate("cleaned gold", (rf[-4]["frac"], rf[-4]["F1_clean"]), textcoords="offset points", xytext=(0, 3), fontsize=6.3, color=INK, ha="center")
-    ax.annotate("threshold", (wj[-1]["frac"], wj[-1]["F1"]), textcoords="offset points", xytext=(4, -2), fontsize=6.3, color=INK, ha="left", va="center")
-    # re-implemented baselines (same protocol as ours) as lines; published values as open markers
+    # labels sit in empty space next to the curves (positions in offset points from a data point)
+    sel = next(r for r in rf if r["frac"] > 0.02)           # first point on the flat part at the right
+    ax.annotate("classifier", (sel["frac"], sel["F1"]), textcoords="offset points", xytext=(0, -4),
+                ha="center", va="top", fontsize=6.3, color=INK)
+    ax.annotate("cleaned gold", (sel["frac"], sel["F1_clean"]), textcoords="offset points", xytext=(0, 2),
+                ha="center", va="bottom", fontsize=6.3, color=INK)
+    flat = next(r for r in wj if r["F1"] >= 0.99 * wj[-1]["F1"])   # where the threshold curve levels off
+    ax.annotate("threshold", (flat["frac"], flat["F1"]), textcoords="offset points", xytext=(2, -4),
+                ha="left", va="top", fontsize=6.3, color=INK)
+    # re-implemented baselines (same protocol as ours) as lines and a filled marker
     ms = load("msm.json")
     for prefix, color, marker, ls in (("msmp|", MUTED, "s", ":"), ("msmp_plus|", ORANGE, "^", "--")):
         rows = series(ms, prefix)
@@ -80,14 +86,17 @@ def combined_figure():
     a = ms["msm|all"]
     ax.plot([a["frac"]], [a["F1"]], color=ORANGE, marker="o", markersize=4.2, linestyle="none",
             markeredgecolor="white", markeredgewidth=0.4, clip_on=False)
-    ax.annotate("MSM", (a["frac"], a["F1"]), textcoords="offset points", xytext=(0, -5), ha="center", va="top", fontsize=6.3, color=MUTED)
+    ax.annotate("MSM (re-run)", (a["frac"], a["F1"]), textcoords="offset points", xytext=(-5, -9),
+                ha="right", va="top", fontsize=6.3, color=MUTED)
     for x, y, mk in ((1.0, 0.746, "P"), (1.0, 0.525, "o"), (0.05, 0.477, "s"), (0.05, 0.49, "^")):
         ax.plot([x], [y], color=MUTED, marker=mk, markersize=4.0, linestyle="none", markerfacecolor="none",
                 markeredgewidth=0.7, clip_on=False)
-    for name, x, y, off, va in (("APFA (publ.)", 1.0, 0.746, (-5, 0), "center"), ("MSM (publ.)", 1.0, 0.525, (-5, 3), "bottom"),
-                                ("MSMP(+) (publ.)", 0.05, 0.477, (-5, -3), "top")):
+    # open markers: published values (the caption says so)
+    for name, x, y, off, va in (("APFA", 1.0, 0.746, (-5, 0), "center"),
+                                ("MSM", 1.0, 0.525, (-5, 2), "bottom"),
+                                ("MSMP(+)", 0.05, 0.49, (-4, 4), "bottom")):
         ax.annotate(name, (x, y), textcoords="offset points", xytext=off, ha="right", va=va, fontsize=6.3, color=MUTED)
-    ax.set_xscale("log"); ax.set_xlim(1e-4, 1.0); ax.set_ylim(0.2, 0.9); ax.set_xticks([1e-4, 1e-2, 1])
+    ax.set_xscale("log"); ax.set_xlim(1e-4, 1.0); ax.set_ylim(0.2, 1.0); ax.set_xticks([1e-4, 1e-2, 1])
     ax.set_title("(d) F1-measure", fontsize=8, color=INK)
     fig.supxlabel("Fraction of comparisons (log scale)", fontsize=8, color=INK)
     fig.savefig(os.path.join(OUT, "results.pdf")); fig.savefig(os.path.join(OUT, "results.png"), dpi=220)

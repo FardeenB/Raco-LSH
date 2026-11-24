@@ -4,7 +4,10 @@
    product records (the experiments pass records without the gold field anyway).
 2. Robustness: F1 at k=3 on a second, independent set of bootstrap splits.
 3. Wall-clock time of the LSH pipeline versus scoring all cross-shop pairs, on the test
-   collections and on the complete data set.
+   collections and on the complete data set (all pairs of the complete data set: first
+   N_FULL_EXHAUSTIVE bootstraps only). Times are medians over the bootstraps, so that one run
+   slowed down by other activity on the machine (typically the first) does not dominate; F1 and
+   counts are means. Run this experiment on an otherwise idle machine.
 
 usage: python experiments/run_checks.py [n_bootstraps]
 """
@@ -13,6 +16,8 @@ from itertools import combinations
 from common import *
 from lshdd.pipeline import DuplicateDetector, featurize
 from lshdd.tokens import product_tokens
+
+N_FULL_EXHAUSTIVE = 5     # bootstraps that also time scoring all pairs of the complete data set (~30 s each)
 
 
 def exhaustive_seconds(det, prods):
@@ -44,13 +49,14 @@ if __name__ == "__main__":
         t0 = time.perf_counter()
         _, cands_full = det.predict(allprods)
         t_full = time.perf_counter() - t0
-        t_full_all, n_full_all = exhaustive_seconds(det, allprods) if bi < 3 else (float("nan"), 0)
+        t_full_all, n_full_all = exhaustive_seconds(det, allprods) if bi < N_FULL_EXHAUSTIVE else (float("nan"), 0)
         rows.append(dict(F1=prf(pred, g_te)["F1"], fit_seconds=t_fit, predict_seconds=t_pred,
                          exhaustive_predict_seconds=t_all, n_candidates=len(cands), n_all_pairs=n_all,
                          n_test=len(te), full_predict_seconds=t_full, full_n_candidates=len(cands_full),
                          full_exhaustive_seconds=t_full_all))
         print({k: round(v, 3) for k, v in rows[-1].items()})
-    out = {k: float(np.nanmean([r[k] for r in rows])) for k in rows[0]}
+    out = {k: float((np.nanmedian if k.endswith("_seconds") else np.nanmean)([r[k] for r in rows]))
+           for k in rows[0]}
     alt = []
     for bi, (tr, te) in enumerate(get_splits(P, 30, seed=777)):
         det = DuplicateDetector(k=3, seed=4000 + bi).fit([public(P[i]) for i in tr], local_gold(P, tr))
@@ -61,5 +67,6 @@ if __name__ == "__main__":
     out["F1_alternative_splits_n"] = len(alt)
     out["tokens_identical_without_gold"] = bool(same)
     out["n_boot"] = len(rows)
-    save("checks.json", out, meta("run_checks", nb, alternative_split_seed=777, n_boot_alternative=len(alt)))
+    save("checks.json", out, meta("run_checks", nb, alternative_split_seed=777, n_boot_alternative=len(alt),
+                                  timing="median over bootstraps", n_full_exhaustive=min(nb, N_FULL_EXHAUSTIVE)))
     print({k: round(v, 4) if isinstance(v, float) else v for k, v in out.items()})
