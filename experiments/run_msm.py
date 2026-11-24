@@ -43,7 +43,7 @@ from itertools import product as grid
 from multiprocessing import Pool
 from common import *
 from lshdd import baselines
-from lshdd.msm import MSM, hsim, title_sim, cluster, f1_path, same_shop
+from lshdd.msm import MSM, hsim, title_sim, cluster, f1_paths, same_shop
 
 TENTHS = tuple(round(0.1 * i, 1) for i in range(1, 10))
 GAMMA = ALPHA = MU = TENTHS
@@ -130,10 +130,16 @@ def one_bootstrap(args):
     sel_te = collection(P, test, 900 + bi, g_te)
     # variants that score the same training pairs (e.g. two t with the same bands) share the search
     shared = {sel["key"]: sel for sel in sel_tr.values()}
-    # the search only needs the components of the training pairs; positions in that subset:
+    # the search only needs the components of the training pairs ("need", every pair msm|all
+    # scores); which of them every pre-selection scores:
+    keys = list(shared)
     need = np.unique(np.concatenate([sel["idx"] for sel in shared.values()]))
     sub = {k: v[..., need] for k, v in comps.items()}
-    at = {key: np.searchsorted(need, sel["idx"]) for key, sel in shared.items()}
+    every = sel_tr["msm|all"]
+    need_pairs = [every["pairs"][j] for j in np.searchsorted(every["idx"], need)]
+    member = np.zeros((len(keys), len(need)), dtype=bool)
+    for row, key in enumerate(keys):
+        member[row, np.searchsorted(need, shared[key]["idx"])] = True
     S = settings()
     # title_sim depends on (alpha, beta) only: one per group of settings
     groups = {}
@@ -144,8 +150,10 @@ def one_bootstrap(args):
         title = title_sim(sub, a, b)
         for s, g, mu in members:
             d = 1.0 - hsim(sub, g, a, b, mu, title)
-            for key, sel in shared.items():
-                f_tr[key][s] = f1_path(len(train), sel["pairs"], d[at[key]], g_tr, EPS, inf_tr)
+            # one sort and one compiled pass for all pre-selections (= f1_path per pre-selection)
+            F = f1_paths(len(train), need_pairs, d, member, g_tr, EPS, inf_tr)
+            for row, key in enumerate(keys):
+                f_tr[key][s] = F[row]
     res = {}
     for v, tr in sel_tr.items():
         te = sel_te[v]

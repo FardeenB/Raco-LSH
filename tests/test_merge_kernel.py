@@ -43,3 +43,17 @@ def test_gold_that_is_not_a_clustering_falls_back():
     pairs, d = [(0, 1), (1, 2), (0, 2)], np.array([0.1, 0.2, 0.3])
     shops = msm.same_shop(["a", "b", "c"])
     assert msm.f1_path(3, pairs, d, {(0, 1), (1, 2)}, [0.15, 0.25, 0.35], shops) == pytest.approx([2 / 3, 0.8, 0.8])
+
+
+@pytest.mark.parametrize("seed", range(60))
+def test_f1_paths_equals_f1_path_per_subset(seed):
+    # several pre-selections (random subsets of one list of pairs) clustered in one compiled pass
+    n, shop, gold, pairs, dist = collection(seed)
+    rng = np.random.default_rng(1000 + seed)
+    members = rng.random((5, len(pairs))) < rng.uniform(0.1, 1.0, (5, 1))
+    members[0] = True                                  # the complete list, like msm|all
+    fast = msm.same_shop(shop)
+    got = msm.f1_paths(n, pairs, dist, members, gold, EPS, fast)
+    for m, row in zip(members, got):
+        sub = np.flatnonzero(m)
+        assert row.tolist() == msm.f1_path(n, [pairs[t] for t in sub], dist[sub], gold, EPS, fast)

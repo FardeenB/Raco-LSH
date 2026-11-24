@@ -330,6 +330,67 @@ if njit is not None:
             roots[i] = r
         return out_t[:k], out_np[:k], out_tp[:k], roots
 
+    @njit(cache=True)
+    def _f1_paths_kernel(n, pa, pb, order, dsorted, member, shop, label, eps, n_gold):
+        """_merge_kernel for every row of `member` (the pairs of one pre-selection) over one shared
+        sorted `order`, returning the F1 at every epsilon: F1[key, e]."""
+        K, E = member.shape[0], len(eps)
+        out = np.zeros((K, E))
+        parent = np.empty(n, dtype=np.int64)
+        head = np.empty(n, dtype=np.int64)
+        tail = np.empty(n, dtype=np.int64)
+        nxt = np.empty(n, dtype=np.int64)
+        size = np.empty(n, dtype=np.int64)
+        mask = np.empty(n, dtype=np.int64)
+        for key in range(K):
+            for i in range(n):
+                parent[i] = i
+                head[i] = i
+                tail[i] = i
+                nxt[i] = -1
+                size[i] = 1
+                mask[i] = np.int64(1) << shop[i]
+            npred = 0
+            hits = 0
+            e = 0
+            for q in range(len(order)):
+                t = order[q]
+                if not member[key, t]:
+                    continue
+                while e < E and dsorted[q] > eps[e]:
+                    out[key, e] = 2.0 * hits / (npred + n_gold) if npred + n_gold else 0.0
+                    e += 1
+                ri = pa[t]
+                while parent[ri] != ri:
+                    parent[ri] = parent[parent[ri]]
+                    ri = parent[ri]
+                rj = pb[t]
+                while parent[rj] != rj:
+                    parent[rj] = parent[parent[rj]]
+                    rj = parent[rj]
+                if ri == rj or mask[ri] & mask[rj]:
+                    continue
+                tp = 0
+                a = head[ri]
+                while a != -1:
+                    b = head[rj]
+                    while b != -1:
+                        if label[a] == label[b]:
+                            tp += 1
+                        b = nxt[b]
+                    a = nxt[a]
+                npred += size[ri] * size[rj]
+                hits += tp
+                parent[rj] = ri
+                nxt[tail[ri]] = head[rj]
+                tail[ri] = tail[rj]
+                size[ri] += size[rj]
+                mask[ri] |= mask[rj]
+            while e < E:
+                out[key, e] = 2.0 * hits / (npred + n_gold) if npred + n_gold else 0.0
+                e += 1
+        return out
+
 
 _CACHE = {}           # id(object) -> (object, derived arrays); objects are fixed within a bootstrap
 _CACHE_SIZE = 64
@@ -423,3 +484,21 @@ def f1_path(n, pairs, dist, gold, epsilons, infinite):
     while len(out) < len(epsilons):
         out.append(2 * tp / (npred + len(gold)) if npred + len(gold) else 0.0)
     return out
+
+
+def f1_paths(n, pairs, dist, members, gold, epsilons, infinite):
+    """f1_path for several subsets of one list of pairs at once: F1[key, e] for the pairs
+    {pairs[t] : members[key, t]}, the same as f1_path(n, [pairs[t] for t in subset], dist[subset],
+    ...) with the subset in ascending order. The distances are sorted once (stable, so ties keep
+    the order f1_path gives them) and all subsets are clustered in one compiled call."""
+    members = np.asarray(members, dtype=bool)
+    label = _cached(gold, ("labels", n), lambda: _gold_labels(n, gold)) if njit is not None else None
+    if label is None or not isinstance(infinite, same_shop) or infinite.ids.max(initial=0) > 62:
+        return np.array([f1_path(n, [pairs[t] for t in np.flatnonzero(m)], dist[m], gold, epsilons, infinite)
+                         for m in members]).reshape(len(members), len(epsilons))
+    dist = np.asarray(dist, dtype=np.float64)
+    below = np.flatnonzero(dist <= epsilons[-1])
+    order = below[np.argsort(dist[below], kind="stable")]
+    pa, pb = _cached(pairs, "arrays", lambda: _pair_arrays(pairs))
+    return _f1_paths_kernel(n, pa, pb, order, dist[order], members, infinite.ids, label,
+                            np.asarray(epsilons, dtype=np.float64), len(gold))
