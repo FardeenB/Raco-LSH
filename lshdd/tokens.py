@@ -11,8 +11,8 @@ Token classes
     tn   title bare number
     id   identifier-like token (letters and digits mixed, not a quantity), from the title
     ip   proper prefix of an identifier-like title token (prefix expansion)
-    vi   identifier-like token found in an attribute value
     vq   quantity found in an attribute value, typed by unit and quantised (fractions parsed)
+product_tokens() keeps every class except tn.
 """
 import re
 import html
@@ -100,7 +100,7 @@ def _quantise(x, unit):
     return ["a%d" % a, "b%d" % b]
 
 
-def value_tokens(features, ids=True):
+def value_tokens(features):
     out = set()
     for v in features.values():
         s = normalise(v)
@@ -114,16 +114,12 @@ def value_tokens(features, ids=True):
             unit = _UNIT.get(unit, unit)
             for q in _quantise(x, unit):
                 out.add(("vq", unit + q))
-        if ids:
-            for t in _word_tokens(s):
-                if _is_mixed(t) and len(t) >= 5 and not _QTY.match(t) and '.' not in t:
-                    out.add(("vi", t))
     return out
 
 
 DEFAULT_CLASSES = ("tw", "tq", "id", "ip", "vq")
 
 
-def product_tokens(p, classes=DEFAULT_CLASSES):
-    toks = title_tokens(p["title"]) | value_tokens(p["features"], ids="vi" in classes)
-    return {t for t in toks if t[0] in classes}
+def product_tokens(p):
+    toks = title_tokens(p["title"]) | value_tokens(p["features"])
+    return {t for t in toks if t[0] in DEFAULT_CLASSES}

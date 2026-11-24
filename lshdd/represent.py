@@ -1,6 +1,5 @@
 """Vocabulary building and token weighting."""
 import numpy as np
-from collections import Counter
 
 
 class Vocabulary:
@@ -26,19 +25,7 @@ class Vocabulary:
         return np.array([t[0] for t in self.tokens])
 
 
-def idf_weights(vocab, gamma=2.0, class_weight=None):
-    """w_t = alpha_class(t) * idf_t ** gamma  (tokens present in every product get 0)."""
-    w = vocab.idf() ** gamma
-    if class_weight:
-        cls = vocab.classes()
-        mult = np.array([class_weight.get(c, 1.0) for c in cls])
-        w = w * mult
-    return w
+def idf_weights(vocab, gamma=2.0):
+    """w_t = idf_t ** gamma  (tokens present in every product get 0)."""
+    return vocab.idf() ** gamma
 
-
-def weighted_jaccard(a, b, w):
-    """Exact weighted Jaccard of two sorted id arrays."""
-    inter = np.intersect1d(a, b, assume_unique=True)
-    wi = w[inter].sum()
-    wu = w[a].sum() + w[b].sum() - wi
-    return wi / wu if wu > 0 else 0.0

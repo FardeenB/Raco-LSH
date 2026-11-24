@@ -14,7 +14,9 @@ PAPER = os.path.join(HERE, "..", "paper")
 macros = {}
 metas = {}
 # results files whose numbers are compared with each other in the paper
-BOOTSTRAPPED = ("blocking.json", "matching.json", "msm.json", "lsh_baselines.json", "checks.json")
+BOOTSTRAPPED = ("blocking.json", "matching.json", "msm.json", "checks.json")
+# ... of which these must also use the same number of bootstraps (checks.json only times a few)
+SAME_N_BOOT = ("blocking.json", "matching.json", "msm.json")
 
 
 def load(name):
@@ -40,10 +42,14 @@ def check_provenance():
     if len(set(protocols.values())) > 1:
         raise SystemExit("results files use different bootstrap protocols: %s" % ", ".join(
             "%s: split=%s seed=%s" % (n, s, sd) for n, (s, sd) in sorted(protocols.items())))
+    counts = {n: metas[n]["n_boot"] for n in SAME_N_BOOT if n in protocols}
+    if len(set(counts.values())) > 1:
+        raise SystemExit("results files use different numbers of bootstraps: %s" % ", ".join(
+            "%s: %s" % kv for kv in sorted(counts.items())))
     for n in sorted(protocols):
         a = metas[n]
-        print("%-14s split=%s seed=%s selection=%s n_boot=%s code=%s%s (%s)" % (
-            n, a["split"], a["split_seed"], a["selection"], a["n_boot"], a["git_commit"],
+        print("%-14s split=%s seed=%s n_boot=%s code=%s%s (%s)" % (
+            n, a["split"], a["split_seed"], a["n_boot"], a["git_commit"],
             "+dirty" if a["git_dirty"] else "", a["date"]))
 
 

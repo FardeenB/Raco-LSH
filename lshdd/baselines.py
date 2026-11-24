@@ -7,12 +7,15 @@ MSMP+ (Hartveld et al., CAiSE 2018):    data cleaning (inch / hz), title model w
 Both use ordinary (unweighted) MinHash with a signature of 50% of the vector length and the
 classical banding technique.
 
-lsh_neighbours() is the pre-selection of the MSMP experiments (run_msm.py). The signature length
-n and a threshold t fix the bands: the b whose (1/b)^(b/n) is closest to t, r = n // b. With
-code=True it also follows the MSMP authors' code (students/group6 in
-github.com/nickvalstar/APFAProject: ModelWordSplitter, LSH/MinHash, LSH/LocalitySensitiveHash,
-LSH/HashFunction): MinHash with explicit random permutations, and band keys that concatenate the
-signature entries without a separator, so that e.g. [1, 23] and [12, 3] share a bucket.
+classical_candidates() is the pre-selection of the blocking comparison (run_blocking.py): MinHash
+by universal hashing (lshdd/minhash.py), exact band keys.
+
+lsh_neighbours() is the pre-selection of the end-to-end MSMP / MSMP+ baselines (run_msm.py), which
+follows the MSMP authors' code (students/group6 in github.com/nickvalstar/APFAProject:
+ModelWordSplitter, LSH/MinHash, LSH/LocalitySensitiveHash, LSH/HashFunction). The signature length
+n and a threshold t fix the bands: the b whose (1/b)^(b/n) is closest to t, r = n // b. MinHash
+uses explicit random permutations, and band keys concatenate the signature entries without a
+separator, so that e.g. [1, 23] and [12, 3] share a bucket.
 """
 import re
 import numpy as np
@@ -45,16 +48,11 @@ def _clean(s):
     return _HZ.sub("hz", _INCH.sub("inch", s)).lower()
 
 
-def msmp_plus_tokenizer(products, decimals_only=True, title_mw_in_values=True, value_numbers=True):
-    """MSMP+ needs the title model words of the whole collection, so it is a factory.
-
-    decimals_only=True keeps only value numbers that contain a decimal point ("we only add
-    decimal numbers"); False follows the published regular expression literally, which also
-    admits integers. We report the better of the two variants for the baseline.
-
-    The variants of MSMP+ (Fig. 2-4): title_mw_in_values=False, value_numbers=False is "clean"
-    (MSMP on the cleaned title); value_numbers=False is "clean + values" (title model words also
-    found in the values); both True is MSMP+."""
+def msmp_plus_tokenizer(products):
+    """MSMP+ needs the title model words of the whole collection, so it is a factory: cleaned
+    title model words, title model words that re-occur in the values, and the numbers of the value
+    model words. Only value numbers that contain a decimal point are kept ("we only add decimal
+    numbers"), although the published regular expression also admits integers."""
     title_mw = [set(_MW_TITLE.findall(_clean(p["title"]))) for p in products]
     all_title_mw = set().union(*title_mw) if title_mw else set()
     cache = {}
@@ -62,11 +60,11 @@ def msmp_plus_tokenizer(products, decimals_only=True, title_mw_in_values=True, v
         out = {("mw", m) for m in tm}
         for v in p["features"].values():
             for tok in _clean(v).split():
-                if title_mw_in_values and tok in all_title_mw:
+                if tok in all_title_mw:
                     out.add(("mw", tok))
-                if value_numbers and _MW_VALUE.match(tok):
+                if _MW_VALUE.match(tok):
                     num = _NUM.match(tok).group(0)
-                    if "." in num or not decimals_only:
+                    if "." in num:
                         out.add(("num", num))
         cache[id(p)] = out
     return lambda p: cache[id(p)]
@@ -104,35 +102,29 @@ def permutation_signatures(token_ids, n_tokens, n, seed):
     return sig
 
 
-def band_labels(sig, lo, r, concat):
-    """Bucket of every product in the band of rows lo..lo+r-1. concat=True keys the bucket by the
-    entries written one after the other (HashFunction.concatenate), so different signatures can
-    share a bucket."""
-    if concat:
-        keys = sig[:, lo].astype(str)
-        for j in range(lo + 1, lo + r):
-            keys = np.char.add(keys, sig[:, j].astype(str))
-        return np.unique(keys, return_inverse=True)[1].ravel()
-    return np.unique(sig[:, lo:lo + r], axis=0, return_inverse=True)[1].ravel()
+def band_labels(sig, lo, r):
+    """Bucket of every product in the band of rows lo..lo+r-1, keyed by the entries written one
+    after the other (HashFunction.concatenate), so different signatures can share a bucket."""
+    keys = sig[:, lo].astype(str)
+    for j in range(lo + 1, lo + r):
+        keys = np.char.add(keys, sig[:, j].astype(str))
+    return np.unique(keys, return_inverse=True)[1].ravel()
 
 
-def lsh_neighbours(products, tokenizer, ts, seed, code=False):
+def lsh_neighbours(products, tokenizer, ts, seed):
     """{t: (b, r, N)} for every threshold t in ts, where N[i, j] is True when products i and j share
     a bucket in at least one band (N[i, i] is True). Pairs of one Web shop are included, as in the
-    LSH of the papers. Signature length n = 50% of the vector length; code=True uses
-    permutation_signatures and concatenated band keys, otherwise lshdd.minhash and exact keys."""
+    LSH of the papers. Signature length n = 50% of the vector length, permutation_signatures and
+    concatenated band keys."""
     vocab = Vocabulary([tokenizer(p) for p in products])
     n = max(2, len(vocab.tokens) // 2)
-    if code:
-        sig = permutation_signatures(vocab.ids, len(vocab.tokens), n, seed)
-    else:
-        sig = signatures(vocab.ids, token_codes(vocab.tokens), None, n, seed=seed)
+    sig = permutation_signatures(vocab.ids, len(vocab.tokens), n, seed)
     out = {}
     for t in ts:
         b, r = bands_for(n, t)
         N = np.eye(len(products), dtype=bool)
         for k in range(b):
-            lab = band_labels(sig, k * r, r, concat=code)
+            lab = band_labels(sig, k * r, r)
             order = np.argsort(lab, kind="stable")
             for grp in np.split(order, np.flatnonzero(np.diff(lab[order])) + 1):
                 if len(grp) > 1:

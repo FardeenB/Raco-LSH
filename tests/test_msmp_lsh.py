@@ -1,4 +1,4 @@
-"""MSMP pre-selection in code mode against the MSMP authors' Java code (students/group6 in
+"""MSMP pre-selection against the MSMP authors' Java code (students/group6 in
 github.com/nickvalstar/APFAProject).  usage: python -m pytest tests"""
 import os
 import sys
@@ -30,10 +30,8 @@ def test_bands_for():
 
 def test_concatenated_band_keys_collide():
     sig = np.array([[1, 23], [12, 3], [1, 2]])
-    lab = bl.band_labels(sig, 0, 2, concat=True)          # "123", "123", "12"
+    lab = bl.band_labels(sig, 0, 2)                       # "123", "123", "12"
     assert lab[0] == lab[1] != lab[2]
-    lab = bl.band_labels(sig, 0, 2, concat=False)
-    assert len(set(lab.tolist())) == 3
 
 
 def test_permutation_signatures():
@@ -53,7 +51,7 @@ def test_permutation_minhash_estimates_jaccard():
 def test_lsh_neighbours_matrix():
     prods = [{"title": t, "shop": s, "features": {}} for t, s in
              (('Samsung UN46ES6580 1080p', "a"), ('Samsung UN46ES6580 1080p', "a"), ("Sony KDL40 720p", "b"))]
-    out = bl.lsh_neighbours(prods, bl.msmp_tokens_code, (0.5,), seed=0, code=True)
+    out = bl.lsh_neighbours(prods, bl.msmp_tokens_code, (0.5,), seed=0)
     b, r, N = out[0.5]
     assert N.diagonal().all() and (N == N.T).all()
     assert N[0, 1]                                         # identical titles, also within one shop

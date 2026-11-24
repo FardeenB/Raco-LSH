@@ -26,7 +26,6 @@ def exhaustive_seconds(det, prods):
 
 if __name__ == "__main__":
     nb = int(sys.argv[1]) if len(sys.argv) > 1 else 10
-    selection()
     P = load_products(DATA)
     same = all(product_tokens(p) == product_tokens(public(p)) for p in P)
     print("tokens identical without gold field:", same)

@@ -1,4 +1,4 @@
-"""MSM in CODE mode against the logic of the MSM authors' Java code (msm/MsmSimilarity.java,
+"""MSM against the logic of the MSM authors' Java code (msm/MsmSimilarity.java,
 msm/TitleAnalyzerImpl.java, msm/CustomClustering.java of github.com/nickvalstar/APFAProject).
 Expected values are worked out by hand from the Java source.  usage: python -m pytest tests"""
 import math
@@ -11,7 +11,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from lshdd import msm
 from lshdd.brands import title_brands
-from lshdd.msm import CODE, PAPER, MSM
+from lshdd.msm import MSM
 
 
 def lev(a, b):
@@ -33,8 +33,8 @@ def product(title, features=None, shop="a"):
     return {"shop": shop, "title": title, "features": features or {"Size": "1"}}
 
 
-def components(cfg, p, q, gammas=(0.7,)):
-    m = MSM([p, dict(q, shop="b")], cfg=cfg)
+def components(p, q, gammas=(0.7,)):
+    m = MSM([p, dict(q, shop="b")])
     return m.components([(0, 1)], gammas)
 
 
@@ -86,16 +86,14 @@ def test_mwperc_dice_over_value_lists():
     # no key matches (gamma 0.99); value model words: [32in, 32in, 5kg] versus [32in]
     p = product("x", {"Width": "32in", "Height": "32in", "Mass": "5kg"})
     q = product("y", {"Depth": "32in"})
-    assert components(CODE, p, q, (0.99,))["mwp"][0, 0] == pytest.approx((2 + 1) / (3 + 1))
-    assert components(PAPER, p, q, (0.99,))["mwp"][0, 0] == pytest.approx(1 / 2)   # Jaccard of sets
+    assert components(p, q, (0.99,))["mwp"][0, 0] == pytest.approx((2 + 1) / (3 + 1))
 
 
 def test_value_model_words_from_raw_value():
     # sparker takes model words from the raw value, so case matters; numbers alone are no model words
     p = product("x", {"Resolution": "1080P", "Count": "3"})
     q = product("y", {"Pixels": "1080p", "Number": "3"})
-    assert components(CODE, p, q, (0.99,))["mwp"][0, 0] == 0.0
-    assert components(PAPER, p, q, (0.99,))["mwp"][0, 0] == 1.0
+    assert components(p, q, (0.99,))["mwp"][0, 0] == 0.0
 
 
 # --- TMWM ------------------------------------------------------------------------------------
@@ -108,21 +106,20 @@ T5 = 'Toshiba 32" 720p 60Hz LED-LCD HDTV 32SL410U'
 
 def test_title_cosine_counts_words():
     # 4 of 7 words shared
-    assert components(CODE, product(T2), product(T3))["cos"][0] == pytest.approx(4 / 7)
+    assert components(product(T2), product(T3))["cos"][0] == pytest.approx(4 / 7)
     # word counts: "/" occurs 4 times in T4 -> 5 / sqrt(23 * 7); a set cosine would ignore that
-    assert components(CODE, product(T4), product(T5))["cos"][0] == pytest.approx(5 / math.sqrt(23 * 7))
+    assert components(product(T4), product(T5))["cos"][0] == pytest.approx(5 / math.sqrt(23 * 7))
 
 
 def test_conflict_rule_rejects_true_duplicate():
-    c = components(CODE, product(T2), product(T3))
+    c = components(product(T2), product(T3))
     assert c["conflict"][0]                       # 120hz / 240hz: same unit, other number
-    assert msm.title_sim(c, 0.5, 0.0, CODE)[0] == 1.0      # cosine 4/7 > alpha wins first
-    assert msm.title_sim(c, 0.6, 0.0, CODE)[0] == -1.0     # otherwise the conflict rejects it
-    assert msm.title_sim(c, 0.6, 0.0, PAPER)[0] != -1.0    # PAPER ignores the rule
+    assert msm.title_sim(c, 0.5, 0.0)[0] == 1.0      # cosine 4/7 > alpha wins first
+    assert msm.title_sim(c, 0.6, 0.0)[0] == -1.0     # otherwise the conflict rejects it
 
 
 def test_tmwm_levenshtein_parts():
-    c = components(CODE, product(T4), product(T5))
+    c = components(product(T4), product(T5))
     A, B = ['32"', "720p", "60hz"], ['32"', "720p", "60hz", "32sl410u"]
     assert not c["conflict"][0]
     # average over all pairs of title model words
@@ -130,18 +127,16 @@ def test_tmwm_levenshtein_parts():
     # pairs with equal letters and approximately equal numbers: the three identical words
     assert c["mwsim"][0] == pytest.approx(1.0)
     expected = 0.5 * 1.0 + 0.5 * (0.5 * c["cos"][0] + 0.5 * c["base"][0])
-    assert msm.title_sim(c, 0.9, 0.0, CODE)[0] == pytest.approx(expected)
-    assert msm.title_sim(c, 0.9, 0.95, CODE)[0] == -1.0    # not above beta
+    assert msm.title_sim(c, 0.9, 0.0)[0] == pytest.approx(expected)
+    assert msm.title_sim(c, 0.9, 0.95)[0] == -1.0    # not above beta
 
 
 def test_tmwm_without_model_words_is_rejected():
     # no model words: avgLvSim is 0/0 = NaN in Java, so TMWM returns -1 unless the cosine decides
-    c = components(CODE, product("Samsung LED HDTV"), product("Samsung Plasma HDTV"))
+    c = components(product("Samsung LED HDTV"), product("Samsung Plasma HDTV"))
     assert c["cos"][0] == pytest.approx(2 / 3)
-    assert msm.title_sim(c, 0.7, 0.0, CODE)[0] == -1.0
-    assert msm.title_sim(c, 0.6, 0.0, CODE)[0] == 1.0
-    assert msm.title_sim(components(PAPER, product("Samsung LED HDTV"), product("Samsung Plasma HDTV")),
-                         0.7, 0.0, PAPER)[0] > 0
+    assert msm.title_sim(c, 0.7, 0.0)[0] == -1.0
+    assert msm.title_sim(c, 0.6, 0.0)[0] == 1.0
 
 
 # --- hSim, brands, clustering ----------------------------------------------------------------
@@ -155,28 +150,21 @@ def _c(m, minf, **kw):
 
 def test_theta_not_capped():
     # 3 key matches, 2 features: th1 = 1.5 in Java; title rejected (NaN) -> th1 avg + (1 - th1) mwPerc
-    assert msm.hsim(_c(3, 2), 0, 0.5, 0.0, 0.5, CODE)[0] == pytest.approx(1.5 * 0.5 - 0.5 * 0.2)
-    capped = _c(3, 2, base=np.array([0.0]))                  # PAPER: th1 capped at 1
-    t = msm.title_sim(capped, 0.5, 0.0, PAPER)[0]
-    assert t == -1.0
-    assert msm.hsim(capped, 0, 0.5, 0.0, 0.5, PAPER)[0] == pytest.approx(0.5)
+    assert msm.hsim(_c(3, 2), 0, 0.5, 0.0, 0.5)[0] == pytest.approx(1.5 * 0.5 - 0.5 * 0.2)
 
 
 def test_different_brands_are_not_scored():
     prods = [product("Samsung 32in", shop="a"), product("LG 32in", shop="b"), product("TV 32in", shop="c")]
-    assert MSM(prods, cfg=CODE).valid_pairs() == [(0, 2), (1, 2)]
+    assert MSM(prods).valid_pairs() == [(0, 2), (1, 2)]
 
 
-def test_unscored_pairs_do_not_block_in_code_mode():
-    # three shops; (0, 2) is not scored. Java: distance 1 -> the chain 0-1-2 is merged;
-    # PAPER: distance infinity -> 2 cannot join the cluster of 0 and 1
+def test_unscored_pairs_do_not_block():
+    # three shops; (0, 2) is not scored. Java: distance 1 -> the chain 0-1-2 is merged
     pairs, d = [(0, 1), (1, 2)], np.array([0.1, 0.2])
-    code = msm.cluster(3, pairs, d, 0.5, msm.same_shop(["a", "b", "c"]))
-    assert code == {(0, 1), (0, 2), (1, 2)}
-    assert msm.cluster(3, pairs, d, 0.5) == {(0, 1)}
+    assert msm.cluster(3, pairs, d, 0.5, msm.same_shop(["a", "b", "c"])) == {(0, 1), (0, 2), (1, 2)}
 
 
-def test_same_shop_blocks_in_code_mode():
+def test_same_shop_blocks():
     # 0 and 2 come from the same shop: never in one cluster
     pairs, d = [(0, 1), (1, 2)], np.array([0.1, 0.2])
     assert msm.cluster(3, pairs, d, 0.5, msm.same_shop(["a", "b", "a"])) == {(0, 1)}

@@ -6,7 +6,7 @@ Abt-Buy (consumer electronics) and Amazon-Google (software), as distributed with
 
 usage: python experiments/run_external.py
 """
-import csv, sys
+import csv
 from common import *
 from lshdd.pipeline import Blocker
 from lshdd.tokens import title_tokens, product_tokens

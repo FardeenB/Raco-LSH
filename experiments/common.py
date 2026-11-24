@@ -1,11 +1,9 @@
 """Shared set-up of the experiments: data, evaluation protocol and results files.
 
-The protocol is chosen with environment variables, so that every experiment uses the same one:
-    SPLIT      bootstrap scheme (see get_splits): cluster (default), group or plain
-    SELECTION  how a grid search picks its parameters: train (default), or sparker to reproduce
-               the selection of the MSM authors' code (only run_msm.py supports it)
-    RESULTS_DIR  where results/*.json are written (default: results/ of the repository)
-Every results file stores the protocol and the code it was made with under the key "_meta".
+Protocol of every experiment: N_BOOT bootstraps over the duplicate clusters (get_splits), the
+same draws in every experiment; parameters are only ever chosen on the training products.
+RESULTS_DIR (environment) redirects results/*.json. Every results file stores the protocol and the
+code it was made with under the key "_meta".
 """
 import os, sys, re, json, hashlib, subprocess, datetime
 from collections import defaultdict
@@ -13,42 +11,28 @@ from itertools import combinations
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 import numpy as np
 from lshdd.data import load_products
-from lshdd.evaluate import (bootstrap_splits, cluster_bootstrap_splits, group_bootstrap_splits,
-                            local_gold, blocking_scores, prf)
+from lshdd.evaluate import cluster_bootstrap_splits, local_gold, blocking_scores, prf
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-DATA = os.environ.get("TV_DATA", os.path.join(ROOT, "data", "TVs-all-merged.json"))
+DATA = os.path.join(ROOT, "data", "TVs-all-merged.json")
 RESULTS = os.environ.get("RESULTS_DIR", os.path.join(ROOT, "results"))
+SPLIT = "cluster"
 SPLIT_SEED = 2026
-SPLITS = ("cluster", "group", "plain")
-SELECTIONS = ("train", "sparker")
-SPLIT = os.environ.get("SPLIT", "cluster")
-SELECTION = os.environ.get("SELECTION", "train")
-if SPLIT not in SPLITS:
-    raise SystemExit("SPLIT=%s is not one of %s" % (SPLIT, ", ".join(SPLITS)))
-if SELECTION not in SELECTIONS:
-    raise SystemExit("SELECTION=%s is not one of %s" % (SELECTION, ", ".join(SELECTIONS)))
+N_BOOT = 50
 
 
 def get_splits(products, n_boot, seed=SPLIT_SEED):
-    """(train_idx, test_idx) of every bootstrap under the scheme SPLIT:
-        cluster  duplicate clusters drawn with replacement from one pool, as in sparker, the MSM
-                 authors' code (default; used for the MSM / MSMP / MSMP+ results they report)
-        group    as cluster, but singletons and duplicate groups are drawn separately, so the
-                 ratio of duplicates versus non-duplicates is kept more tightly (MSM paper)
-        plain    products drawn with replacement (assignment text); this splits duplicate groups
-                 over train and test, which leaves ~2.7x fewer duplicates in the test set"""
-    if SPLIT == "plain":
-        return list(bootstrap_splits(len(products), n_boot, seed=seed))
-    scheme = cluster_bootstrap_splits if SPLIT == "cluster" else group_bootstrap_splits
-    return list(scheme([p["gold"] for p in products], n_boot, seed=seed))
+    """(train_idx, test_idx) of every bootstrap: duplicate clusters drawn with replacement from one
+    pool, as in sparker, the MSM authors' code (evaluate.cluster_bootstrap_splits). Bootstrap i is
+    the same draw for every n_boot."""
+    return list(cluster_bootstrap_splits([p["gold"] for p in products], n_boot, seed=seed))
 
 
-def selection(supported=("train",)):
-    """SELECTION, after checking that the calling experiment implements it."""
-    if SELECTION not in supported:
-        raise SystemExit("SELECTION=%s is not supported by this experiment (only %s)" % (SELECTION, ", ".join(supported)))
-    return SELECTION
+def cli_args(default_procs=4):
+    """(n_bootstraps, n_processes) from the command line: [n_bootstraps] [n_processes]."""
+    nb = int(sys.argv[1]) if len(sys.argv) > 1 else N_BOOT
+    nproc = int(sys.argv[2]) if len(sys.argv) > 2 else default_procs
+    return nb, nproc
 
 
 def cleaned_gold(products, idx):
@@ -94,11 +78,10 @@ def code_hash():
     return h.hexdigest()[:12]
 
 
-def meta(script, n_boot=None, selection="train", **extra):
+def meta(script, n_boot=None, **extra):
     """Provenance of a results file. n_boot=None for experiments without bootstraps."""
     out = dict(script=script, n_boot=n_boot,
                split=SPLIT if n_boot else None, split_seed=SPLIT_SEED if n_boot else None,
-               selection=selection if n_boot else None,
                git_commit=_git("rev-parse", "--short", "HEAD"),
                git_dirty=bool(_git("status", "--porcelain", "--untracked-files=no")),
                code_hash=code_hash(), date=datetime.datetime.now().isoformat(timespec="seconds"))
@@ -111,9 +94,3 @@ def save(name, obj, meta):
     with open(os.path.join(RESULTS, name), "w") as f:
         json.dump({"_meta": meta, **obj}, f, indent=1)
 
-
-def load_results(name):
-    """(results, meta) of results/<name>; meta is None for files without provenance."""
-    with open(os.path.join(RESULTS, name)) as f:
-        res = json.load(f)
-    return res, res.pop("_meta", None)

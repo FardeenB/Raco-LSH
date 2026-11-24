@@ -1,7 +1,6 @@
 """Locality-sensitive hashing by the banding technique (own implementation)."""
 from collections import defaultdict, Counter
 from itertools import combinations
-import numpy as np
 
 
 def band_buckets(sig, bands, rows):
@@ -49,27 +48,3 @@ def collision_counts(sig, bands, rows, block=None):
                 counts[(i, j)] += 1
     return counts
 
-
-def candidates_at_least(counts, k):
-    return {p for p, c in counts.items() if c >= k}
-
-
-def collision_probability(s, bands, rows, k=1):
-    """P[pair with (weighted) Jaccard s becomes a candidate] = P[Bin(bands, s^rows) >= k]."""
-    from math import comb
-    q = s ** rows
-    return 1.0 - sum(comb(bands, m) * q ** m * (1 - q) ** (bands - m) for m in range(k))
-
-
-def threshold(bands, rows):
-    return (1.0 / bands) ** (1.0 / rows)
-
-
-def band_configurations(n_hashes):
-    """All (bands, rows) with bands*rows <= n_hashes using as many hashes as possible."""
-    out = []
-    for r in range(1, n_hashes + 1):
-        b = n_hashes // r
-        if b >= 1:
-            out.append((b, r))
-    return out

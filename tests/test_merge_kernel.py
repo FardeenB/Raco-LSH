@@ -1,5 +1,5 @@
 """The compiled clustering (msm._merge_kernel) against the Python reference (msm._merges) on
-random collections, for both ways of deciding which pairs are at distance infinity.
+random collections.
 usage: python -m pytest tests"""
 import os
 import sys
@@ -36,18 +36,10 @@ def test_same_shop_rule(seed):
     assert msm.cluster(n, pairs, dist, 0.5, fast) == msm.cluster(n, pairs, dist, 0.5, python)
 
 
-@pytest.mark.parametrize("seed", range(60))
-def test_unscored_pairs_rule(seed):
-    n, shop, gold, pairs, dist = collection(seed)
-    finite = set(pairs)
-    python = lambda a, b: ((a, b) if a < b else (b, a)) not in finite
-    assert msm.f1_path(n, pairs, dist, gold, EPS) == msm.f1_path(n, pairs, dist, gold, EPS, python)
-    assert msm.cluster(n, pairs, dist, 0.5) == msm.cluster(n, pairs, dist, 0.5, python)
-
-
 def test_gold_that_is_not_a_clustering_falls_back():
     # (0, 1) and (1, 2) without (0, 2): no labels exist, the Python path is used.
     # eps 0.15: {0, 1}, 1 of 1 predicted pairs right -> 2 / (1 + 2); eps 0.25: {0, 1, 2}, 2 of 3 -> 4 / 5
     assert msm._gold_labels(3, {(0, 1), (1, 2)}) is None
     pairs, d = [(0, 1), (1, 2), (0, 2)], np.array([0.1, 0.2, 0.3])
-    assert msm.f1_path(3, pairs, d, {(0, 1), (1, 2)}, [0.15, 0.25, 0.35]) == pytest.approx([2 / 3, 0.8, 0.8])
+    shops = msm.same_shop(["a", "b", "c"])
+    assert msm.f1_path(3, pairs, d, {(0, 1), (1, 2)}, [0.15, 0.25, 0.35], shops) == pytest.approx([2 / 3, 0.8, 0.8])

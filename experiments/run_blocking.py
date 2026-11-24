@@ -1,15 +1,11 @@
 """Experiment 1: quality of the LSH pre-selection (PC, PQ, F1*) versus fraction of comparisons.
 
-usage: python experiments/run_blocking.py [n_bootstraps]
+usage: python experiments/run_blocking.py [n_bootstraps] [n_processes]
 """
-import sys
 from multiprocessing import Pool
 from common import *
 from lshdd.pipeline import Blocker
-from lshdd.tokens import product_tokens, title_tokens, value_tokens
-from lshdd.represent import Vocabulary
-from lshdd.minhash import signatures, token_codes
-from lshdd.lsh import candidate_pairs, collision_counts
+from lshdd.tokens import product_tokens
 from lshdd import baselines
 
 KS = [1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512]
@@ -73,11 +69,10 @@ def one_bootstrap(args):
 
 
 if __name__ == "__main__":
-    nb = int(sys.argv[1]) if len(sys.argv) > 1 else 100
+    nb, nproc = cli_args()
     P = load_products(DATA)
-    selection()
     jobs = [(bi, te) for bi, (tr, te) in enumerate(get_splits(P, nb))]
-    with Pool(2) as pool:
+    with Pool(nproc) as pool:
         allres = pool.map(one_bootstrap, jobs, chunksize=1)
     agg = {}
     for key in allres[0]:
